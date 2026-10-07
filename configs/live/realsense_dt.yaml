@@ -1,0 +1,131 @@
+Results:
+  save_results: False
+  save_dir: "results/live_realsense"
+  tensorboard_dir: "results/live_realsense/tensor_board"
+  save_trj: False
+  save_trj_kf_intv: 50
+  use_gui: True
+  use_rerun: False
+  eval_rendering: False
+  use_wandb: False
+
+Dataset:
+  type: 'realsense'
+  dataset_path: "live"   # placeholder — live cameras don't read from disk
+  # 'depth' uses the RealSense depth stream for map initialisation.
+  # Switch to 'monocular' if you only want to use colour (no depth loss).
+  sensor_type: 'depth'
+  pcd_downsample: 64
+  pcd_downsample_init: 32
+  adaptive_pointsize: True
+  point_size: 0.01
+  # Intrinsics are read directly from the hardware — no Calibration block needed.
+  image_width: 848
+  image_height: 480
+
+Training:
+  frame_stride: 1
+  log_interval: 1
+  init_itr_num: 1050
+  tracking_itr_num: 100
+  iterations_per_view: 35
+  size_threshold: 20
+  kf_interval: 5
+  edge_threshold: 1.1
+  rgb_boundary_threshold: 0.01
+  mapping_replay_size: 4
+  mapping_pose_lr_scale: 0.5
+  initial_ba:
+    enabled: False
+    mapping_iters: 100
+    pose_window: 7
+    pose_lr_scale: 1.0
+  use_mapping_replay: True
+  densify_grad_percentile: 0.95
+  kf_translation: 0.08
+  kf_min_translation: 0.05
+  kf_overlap: 0.9
+  kf_cutoff: 0.3
+  min_triangle_area_pixels: 1.0
+  # Densification gating: set densify_on_convergence: True to only densify when mapping
+# loss has plateaued (relative improvement < densify_plateau_min_improvement over window).
+# False = densify every keyframe (original behaviour).
+  densify_on_convergence: True
+  densify_plateau_window: 10
+  densify_plateau_min_improvement: 0.005
+# Max aspect ratio (max_edge/min_edge) for a triangle to be eligible for densification.
+# Triangles above this are slivers and are skipped to avoid accumulating thin triangles.
+  densify_max_aspect_ratio: 5.0
+# Minimum screen-space pixel count for a triangle to be eligible for densification.
+# Triangles covering fewer pixels are already small — splitting them creates wasteful micro-triangles.
+# Increase to suppress proliferation of tiny triangles (try 9, 16, 25 for more aggressive filtering).
+  densify_min_pixel_count: 4
+  use_fd_pose_grad: False
+  check_vertex_grad_fd: False
+  prune_mode: 'slam'
+  prune_coviz: 3
+  single_thread: False
+  spherical_harmonics: False
+  under_reconstructed_mask_threshold: 0.9
+  rdel: True
+  # When true, run restricted Delaunay only on triangles visible in the last keyframe view.
+  # Reduces holes by not retriangulating less-observed regions.
+  rdel_visible_only: True
+  # Only retriangulate triangles in the top X by importance score. 1.0 = all, 0.5 = top 50%.
+  rdel_importance_percentile: .2
+  # Mapping iterations on keyframes where retriangulation ran. Unset = use
+  # iterations_per_view. Does not affect the first two keyframes or initial BA.
+  # rdel_mapping_iters: 35
+
+  alpha_opacity: 0.9
+  lr:
+    cam_rot_delta: 0.003
+    cam_trans_delta: 0.001
+
+opt_params:
+  position_lr_delay_mult: 0.01
+  position_lr_max_steps: 30000
+  lambda_dssim: 0.2
+  random_background: false
+  feature_lr: 0.002
+  max_points: 4000000
+  set_weight: 0.28
+  weight_lr: 0.5
+  lambda_weight: 0.0
+  lambda_equilateral: .2
+  lambda_normals: 0.05
+  lambda_normals_super: 0.15
+  add_percentage: 1.04
+  set_sigma: 0.5
+  prune_triangles_threshold: 0.5
+  prune_size: 400
+  lr_triangles_points_init: 0.0003
+  start_opacity_floor: 5000
+  start_pruning: 4000
+  sigma_until: 30000
+  final_opacity_iter: 24000
+  sigma_start: 0
+  splitt_large_triangles: 100
+  start_upsampling: 20000
+  upscaling_factor: 1
+  init_point_size: 1.0
+  size_probs_zero: 7.5e-05
+  size_probs_zero_image_space: 0.0
+  lambda_vertex: 0.0001
+  max_diff_threshold: 0.5
+  start_vertex_opt: 12000
+  lamba_depth: 0.05
+  depth_lambda_init: 0.01
+  depth_lambda_final: 0.001
+
+model_params:
+  sh_degree: 0
+  source_path: ""
+  model_path: ""
+  resolution: -1
+  white_background: False
+  data_device: "cuda"
+
+pipeline_params:
+  convert_SHs_python: False
+  compute_cov3D_python: False

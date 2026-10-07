@@ -1,0 +1,174 @@
+Results:
+  save_results: True
+  save_dir: "results"
+  tensorboard_dir: "results/tensor_board"
+  save_trj: True
+  save_trj_kf_intv: 50
+  use_gui: True
+  use_rerun: False
+  eval_rendering: False
+  use_wandb: False
+
+Dataset:
+  sensor_type: 'depth'
+  pcd_downsample: 64
+  pcd_downsample_init: 32
+  adaptive_pointsize: True
+  point_size: 0.05
+  radii_percentile_clip: 1.0
+  type: 'replica'
+  Calibration:
+    fx: 600.0
+    fy: 600.0
+    cx: 599.5
+    cy: 339.5
+    k1: 0.0
+    k2: 0.0
+    p1: 0.0
+    p2: 0.0
+    k3: 0.0
+    width: 1200
+    height: 680
+    depth_scale: 6553.5
+    distorted: False
+
+Training:
+  frame_stride: 1
+  log_interval: 1
+  init_itr_num: 1050
+  tracking_itr_num: 100
+  iterations_per_view: 30
+  init_mapping_iters: 150
+  size_threshold: 20
+  kf_interval: 5
+  edge_threshold: 1.1
+  rgb_boundary_threshold: 0.01
+  mapping_replay_size: 4
+  mapping_pose_lr_scale: .5
+  initial_ba:
+    enabled: False
+    mapping_iters: 100
+    pose_window: 7
+    pose_lr_scale: 1.0
+  use_mapping_replay: True
+  densify_grad_percentile: 0.95
+# Effectively disable gradient-based densification selection so that split
+# candidates are chosen by pixel count alone (as in paper)
+  densify_grad_threshold: 1000000000.0
+  kf_translation: 0.04
+  kf_min_translation: 0.02
+  kf_overlap: 0.9
+  kf_cutoff: 0.3
+# Minimum screen-space triangle area (pixels²). Triangles below this are culled (removes slivers).
+# Increase to remove more thin/degenerate triangles; decrease to keep smaller details.
+  min_triangle_area_pixels: 1
+
+  # Densification gating: set densify_on_convergence: True to only densify when mapping
+# loss has plateaued
+  densify_on_convergence: True
+  densify_plateau_window: 10
+  densify_plateau_min_improvement: 0.005
+# Max aspect ratio (max_edge/min_edge) for a triangle to be eligible for densification.
+# Triangles above this are slivers and are skipped to avoid accumulating thin triangles.
+  densify_max_aspect_ratio: 5.0
+# Minimum screen-space pixel count for a triangle to be eligible for densification.
+  densify_min_pixel_count: 0
+
+  use_fd_pose_grad: False
+  # Finite-diff check for vertex gradients (mapping); set True to verify dL/dvertices
+  check_vertex_grad_fd: False
+
+  prune_mode: 'slam'
+  prune_coviz: 3
+  single_thread: False
+  spherical_harmonics: False
+  under_reconstructed_mask_threshold: 0.9
+
+  rdel:   False
+  rdel_visible_only:  True
+  rdel_importance_percentile: 1.0
+
+  alpha_opacity: 0.9
+
+  coverage_aware_spawn: True
+# Exclude depth-discontinuity and border pixels from the RGB tracking loss
+  mask_rgb_with_normal_mask: True
+  weight_reset_interval: 0
+  rgb_weight: 0.90
+
+  lr:
+    cam_rot_delta: 0.003
+    cam_trans_delta: 0.001
+
+opt_params:
+  # Iterations & schedule
+  position_lr_delay_mult: 0.01
+  position_lr_max_steps: 30000
+  lambda_dssim: 0.2
+
+  random_background: false
+
+
+  # Learning rates & capacity
+  feature_lr: 0.0005
+  feature_dc_clamp: 0
+  max_points: 4000000
+
+  # Opacity & weight
+  set_weight: 0.28
+  weight_lr: 0.05
+  lambda_weight: 0.0 # 1.9e-06
+
+  # Equilateral loss
+  lambda_equilateral: 0.2
+
+  # Normal loss
+  lambda_normals: 0.1
+  lambda_normals_super: 0.15
+
+  add_percentage: 1.04
+  set_sigma: 0.5
+
+  # Prune triangles and vertices
+  prune_triangles_threshold: 0.3
+# Importance (max blending weight) threshold below which triangles are pruned;
+# 0.3 matches the paper runs.
+  prune_importance_threshold: 0.3
+  prune_size: 400
+
+  # Second stage
+  lr_triangles_points_init: 0.0005
+  start_opacity_floor: 5000
+  start_pruning: 4000
+  sigma_until: 30000
+  final_opacity_iter: 24000
+  sigma_start: 0
+
+  splitt_large_triangles: 100
+  start_upsampling: 20000
+  upscaling_factor: 1
+
+  init_point_size: 1.0
+
+  size_probs_zero: 7.5e-05
+  size_probs_zero_image_space: 0.0
+
+  # Vertex / depth
+  lambda_vertex: 0.0001
+  max_diff_threshold: 0.5
+  start_vertex_opt: 12000
+  lamba_depth: 0.05
+  depth_lambda_init: 0.01
+  depth_lambda_final: 0.001
+
+model_params:
+  sh_degree: 0
+  source_path: ""
+  model_path: ""
+  resolution: -1
+  white_background: False
+  data_device: "cuda"
+
+pipeline_params:
+  convert_SHs_python: False
+  compute_cov3D_python: False
