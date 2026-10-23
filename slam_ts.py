@@ -37,7 +37,7 @@ from event_median_pool import MedianPool2d
 from tikhonov_regularizor import tikhonov_regularization
 from event_loss_utils import compute_white_balance_loss, compute_ssim_loss
 from event_tools.eval_ate import pose_evaluation, save_pose_as_kitti_evo, align_and_est_scale
-from event_general_utils import render_ev_accumulation, BasicPointCloud
+from event_general_utils import render_ev_accumulation, BasicPointCloud, SH2RGB
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import pypose as pp
@@ -868,6 +868,119 @@ class MeshSLAMTrainer:
             f"(voxel={voxel_length:.3f}m)", tag="GUI")
         return mesh
 
+    def create_densify_points(self, _cur_frame_id, events_stream, T_se3_start, T_se3_end, num_new_pts=1000):
+        c2w_start = T_se3_start.Exp().matrix().unsqueeze(0).cuda()  #[1, 4, 4]
+        render_ev_start = self.render_triangles(c2w_start)
+        c2w_end =  T_se3_end.Exp().matrix().unsqueeze(0).cuda()  #[1, 4, 4]
+        render_ev_end = self.render_triangles(c2w_end)
+        
+        eps = 1e-5
+        syn_event_acc = torch.log(render_ev_end["render"]**2.2+eps)-torch.log(render_ev_start["render"]**2.2+eps)
+        
+        gt_event_map = self.post_process_event_image(events_stream)
+
+        # error_map = (gt_event_map - syn_event_acc).abs()
+        # pixel_uv_with_event = torch.where(error_map > 0.2)
+        # sampled_event_pixel_idx = torch.randperm(pixel_uv_with_event[0].shape[0])[:num_new_pts]
+        # indice_h = pixel_uv_with_event[0][sampled_event_pixel_idx]
+        # indice_w = pixel_uv_with_event[1][sampled_event_pixel_idx]
+        
+        create_densify_points_num = self.config["mapping"]["create_densify_points_num"]
+        densify_alpha_threshold = self.config["mapping"]["densify_alpha_threshold"]
+        # non-visibility mask
+        alpha_start = render_ev_end["rend_alpha"].squeeze().detach()
+        # alpha_start = alpha_start[0][:,:,0]  # [H, W]
+        non_vis_mask = torch.where(alpha_start < densify_alpha_threshold)
+        sampled_event_pixel_idx = torch.randperm(non_vis_mask[0].shape[0])[:create_densify_points_num]
+        indice_h = non_vis_mask[0][sampled_event_pixel_idx].to(self.device)
+        indice_w = non_vis_mask[1][sampled_event_pixel_idx].to(self.device)
+
+        #
+        fx = self.dataset.fx
+        fy = self.dataset.fy
+        cx = self.dataset.cx
+        cy = self.dataset.cy
+        H = self.dataset.H
+        W = self.dataset.W
+
+        sampled_rays = get_camera_rays(H, W, fx, fy, cx, cy, type='OpenCV').to(self.device) 
+        sampled_rays = sampled_rays[indice_h, indice_w, :].to(T_se3_start.device)
+        depth_gs = render_ev_end['expected_depth'].squeeze()[indice_h, indice_w].unsqueeze(-1)
+        depth_gs = depth_gs.detach()
+        depth_img_gs = render_ev_end['expected_depth'].squeeze()
+        img_gs = render_ev_end['render'].detach().cpu().numpy()
+        
+        save_dir_path  = os.path.join(self.config["data"]["output"], self.config["data"]["exp_name"], "depth_for_new_gs")
+        depth_tmp = depth_img_gs.detach()
+        depth_tmp = depth_tmp.view(depth_tmp.shape[0], depth_tmp.shape[1], -1)
+        depth_img = apply_colormap(depth_tmp)
+        depth_img = depth_img.cpu().numpy()
+        if self.config["visualize_inter_img"]:
+            imageio.imwrite(os.path.join(save_dir_path, f"frame{_cur_frame_id}_gs_depth.png"), to8b(depth_img)) 
+        
+        if self.config["add_new_gs_from_estDepth"]:
+            print("&&&&&&&&&&&&&& creat new Gaussian Points from estimated depth map &&&&&&&&&&&&&&&&&&")
+            # estimate depth from the rendered image, using diffuser
+            from PIL import Image
+            from diffusers import DiffusionPipeline
+            from diffusers.utils import load_image
+            depthEst_pretrained_model_path = self.config["depthEst_pretrained_model_path"]
+            pipe = DiffusionPipeline.from_pretrained(
+                        depthEst_pretrained_model_path,
+                        custom_pipeline="marigold_depth_estimation",
+                        # torch_dtype=torch.float16,                # (optional) Run with half-precision (16-bit float).
+                        local_files_only=True
+                    )
+            pipe.to("cuda")
+            # image: Image.Image = load_image(img_path)
+            image = Image.fromarray(to8b(img_gs))
+            pipeline_output = pipe(
+                                    image,                  # Input image.
+                                    # denoising_steps=30,     # (optional) Number of denoising steps of each inference pass. Default: 10.
+                                    # ensemble_size=10,       # (optional) Number of inference passes in the ensemble. Default: 10.
+                                    # processing_res=768,     # (optional) Maximum resolution of processing. If set to 0: will not resize at all. Defaults to 768.
+                                    # match_input_res=True,   # (optional) Resize depth prediction to match input resolution.
+                                    # batch_size=10,           # (optional) Inference batch size, no bigger than `num_ensemble`. If set to 0, the script will automatically decide the proper batch size. Defaults to 0.
+                                    # color_map="Spectral",   # (optional) Colormap used to colorize the depth map. Defaults to "Spectral". Set to `None` to skip colormap generation.
+                                    # show_progress_bar=True, # (optional) If true, will show progress bars of the inference progress.
+                                )
+            depth_img_est: np.ndarray = pipeline_output.depth_np  
+            # save the estimated images
+            depth_colored: Image.Image = pipeline_output.depth_colored      # Colorized prediction
+            imageio.imwrite(os.path.join(save_dir_path, f"frame{_cur_frame_id}_img.png"), to8b(img_gs)) 
+            depth_uint16 = (depth_img_est * 65535.0).astype(np.uint16)
+            Image.fromarray(depth_uint16).save(os.path.join(save_dir_path, f"frame{_cur_frame_id}_depth_map.png"), mode="I;16")
+            depth_colored.save(os.path.join(save_dir_path, f"frame{_cur_frame_id}_depth_colored.png"))
+            # 
+            
+            depth_est = torch.from_numpy(depth_img_est).cuda()[indice_h, indice_w].unsqueeze(-1)
+            depth_aligned = self.depth_alignment(depth_est, depth_gs)
+        else:
+            depth_aligned = depth_gs
+
+        # initialize points on a frontal parallel plane at infinity
+        # depth = 100
+        sampled_rays = (sampled_rays * depth_aligned).transpose(1,0).to(T_se3_start.device)
+
+        #
+        T_cam_to_wld = se3_to_SE3(T_se3_start)
+        sampled_rays = torch.matmul(T_cam_to_wld[:3, :3], sampled_rays) + T_cam_to_wld[:3, 3].unsqueeze(-1) 
+        points = sampled_rays.transpose(1, 0)
+
+        # colors
+        # colors = render_ev_start['image'][indice_h, indice_w].unsqueeze(-1).repeat(1, 3)
+        shs = torch.rand((points.shape[0], 3)) / 255.0
+
+        # normals
+        normals = torch.zeros_like(points)
+        normals[:, 2] = 1.
+
+        # create pcd
+        # pcd = BasicPointCloud(points=points, colors=colors, normals=normals)
+        pcd = BasicPointCloud(points=points.detach().cpu(), colors=SH2RGB(shs), normals=normals)
+
+        return pcd    
+
     def render_triangles(self, cam_2_world):
         world_2_cam = torch.linalg.inv(cam_2_world).squeeze().transpose(0,1) # 4,4 row major order
         full_proj_trans = (world_2_cam.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0))).squeeze() # 4,4 row major order
@@ -1498,17 +1611,23 @@ class MeshSLAMTrainer:
             # loss_total = loss_event + loss_ssim + loss_isotropic + loss_rgb 
             loss_total = loss_event + loss_ssim + loss_no_event + loss_white_balance + loss_tr
 
+            #=============================================================================================
+            # Pose gradient check
             # g = torch.autograd.grad(loss_total, c2w_start, retain_graph=True, allow_unused=True)
             # print("d loss / d c2w:", g)
+            #=============================================================================================
             
             # optimize 
             pose_optimizer.zero_grad()
             loss_total.backward()
             torch.cuda.synchronize()
 
+            #=============================================================================================
+            # Pose gradient check
             # print("grad:", ctrl_knot_se3.grad is None,
             #     None if ctrl_knot_se3.grad is None else ctrl_knot_se3.grad.abs().max().item())
             # print("c2w requires_grad:", c2w_start.requires_grad)
+            #=============================================================================================
 
             #======================================================
             # Mesh Splatting Densification
@@ -1630,9 +1749,12 @@ class MeshSLAMTrainer:
 
             pose_optimizer.step()
 
+            #============================================================================================
+            # Pose update check
             # before = ctrl_knot_se3.detach().clone()
             # pose_optimizer.step()
             # print("max pose delta:", (ctrl_knot_se3.detach() - before).abs().max().item())
+            #=============================================================================================
 
             # if self.config["opt_pose"]:
             #     if (depth_map is None) or (depth_map is not None and iter>200):
@@ -2091,6 +2213,594 @@ class MeshSLAMTrainer:
             self.ctrl_knot_se3_all[idx] = self.get_poses_lie(ctrl_knot_se3, ctrl_knot_ts, ts, mode='linear').Log().detach().clone()  # se3,lieTensor, cuda
         
         print("======================= finished tracking  =========================")    
+
+    def setup_seed(self, seed):
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+        torch.backends.cudnn.deterministic = True
+        
+    def bundle_adjustment(self, BA_batch,  _traj_mode, _num_iters=100001, _seg_num=50, _opt_pose=True, _global_BA=False):
+        # Bundle adjustment 
+        
+        num_batch = len(BA_batch)
+        frame_ts_all = []
+        frame_id_all = []
+        events_all = []
+        preSum_event_batch = [0]
+        for i in range(num_batch):
+            frame_id = BA_batch[i]["frame_id"].item()
+            frame_ts = self.est_c2w_ts[frame_id]
+            frame_id_all.append(frame_id)
+            frame_ts_all.append(frame_ts)
+            cur_event = BA_batch[i]['events'].squeeze().to(self.device)
+            preSum_event_batch.append(cur_event.shape[0]+preSum_event_batch[-1])
+            events_all.append(cur_event)
+        num_events_to_skip = self.config["num_events_to_skip"]
+        preSum_event_batch[0] = preSum_event_batch[0]+num_events_to_skip
+        preSum_event_batch[-1] = preSum_event_batch[-1]-num_events_to_skip
+        
+        events_all = torch.cat(events_all, dim=0)
+        ts_all = events_all[:,2].detach().cpu().numpy()
+        t_data_min =  ts_all.min()
+        t_data_max = ts_all.max()
+        
+        # "incremental" random sampling
+        event_total_num = ts_all.shape[0]
+        incre_sampling_seg_num_expected = _seg_num
+        min_n_winsize = self.config["BA"]["min_n_winsize"]
+        max_n_winsize = self.config["BA"]["max_n_winsize"]
+        
+        incre_sampling_segs_end = np.linspace(10, event_total_num-10, incre_sampling_seg_num_expected).astype(int)
+        start_tmp_ = np.searchsorted(incre_sampling_segs_end, max_n_winsize)
+        if(incre_sampling_segs_end[start_tmp_]<=max_n_winsize):
+            start_tmp_ = start_tmp_+1
+        incre_sampling_segs_end = incre_sampling_segs_end[start_tmp_:]
+        assert incre_sampling_segs_end.shape[0]>1
+        assert incre_sampling_segs_end[0]>max_n_winsize
+        events_per_seg = incre_sampling_segs_end[1]-incre_sampling_segs_end[0]
+        incre_sampling_seg_num = incre_sampling_segs_end.shape[0]
+        print(f"*******************************  BA events_num: {event_total_num}  *********************************")
+        print(f"incremental sampling number: {incre_sampling_seg_num}")
+        print(f"****events_per_seg={events_per_seg}, min_n_winsize={min_n_winsize},max_n_winsize={max_n_winsize}, ")
+        
+        
+        if frame_id_all[-1] >= self.config["start_cspline_idx"] and self.config["traj_mode_BA"]=="cspline":
+            traj_mode = "cspline"
+        else:
+            traj_mode = "linear"
+        
+        # initialize trajectories
+        active_ctrl_knot_ts = []
+        active_ctrl_knot_idx = frame_id_all.copy()
+        active_ctrl_knot_idx.insert(0, frame_id_all[0]-1)
+        
+        if traj_mode == "cspline":
+            active_ctrl_knot_se3 = pp.identity_se3(len(active_ctrl_knot_idx)+1) #LieTensor
+            for ii in range(len(active_ctrl_knot_idx)):
+                idx = active_ctrl_knot_idx[ii]
+                active_ctrl_knot_ts.append(self.ctrl_knot_ts_all[idx])
+                active_ctrl_knot_se3[ii] = self.ctrl_knot_se3_all[idx]
+            # add another control knot
+            print("============================== use cspline interplation ==================================")
+            active_ctrl_knot_idx.append(active_ctrl_knot_idx[-1]+1)
+            active_ctrl_knot_ts.append(active_ctrl_knot_ts[-1] + active_ctrl_knot_ts[-1]-active_ctrl_knot_ts[-2])
+            # predict pose
+            pred_vel = self.predict_velocity(se3_to_SE3(active_ctrl_knot_se3[-2]), se3_to_SE3(active_ctrl_knot_se3[-3]))
+            active_ctrl_knot_se3[-1] = self.predict_pose_se3_lie(active_ctrl_knot_se3[-2], active_ctrl_knot_se3[-3])
+            # don't sample the first chunk
+            active_frame_id_all = frame_id_all.copy()
+            active_frame_ts_all = frame_ts_all.copy()
+            del active_frame_id_all[0]
+            del active_frame_ts_all[0]
+            del preSum_event_batch[0]
+            # _num_iters += 500
+        else:
+            active_frame_id_all = frame_id_all.copy()
+            active_frame_ts_all = frame_ts_all.copy()
+            active_ctrl_knot_se3 = pp.identity_se3(len(active_ctrl_knot_idx)) #LieTensor
+            for ii in range(len(active_ctrl_knot_idx)):
+                idx = active_ctrl_knot_idx[ii]
+                # TODO: ALL the idx is from 1
+                active_ctrl_knot_ts.append(self.ctrl_knot_ts_all[idx])
+                active_ctrl_knot_se3[ii] = self.ctrl_knot_se3_all[idx]
+        
+        active_ctrl_knot_ts[0] = t_data_min-0.0001
+        active_ctrl_knot_ts[-1] = t_data_max+0.0001
+        
+        print(f"****t_data_min={t_data_min}, t_data_max={t_data_max}")
+        print(f"control knot ts: {active_ctrl_knot_ts}")
+        
+        if self.config["use_relative_pose_to_opt"]==1:
+            active_ctrl_knot_se3_rel_opt = pp.identity_se3(active_ctrl_knot_se3.shape[0]) #LieTensor
+            active_ctrl_knot_se3_base = active_ctrl_knot_se3.clone()
+            active_ctrl_knot_se3_rel_opt = torch.nn.Parameter(active_ctrl_knot_se3_rel_opt, requires_grad=True)        
+            pose_optimizer = torch.optim.Adam([{"params": active_ctrl_knot_se3_rel_opt, "lr": self.config['pose_lr']}])
+        elif self.config["use_relative_pose_to_opt"]==0:
+            active_ctrl_knot_se3 = torch.nn.Parameter(active_ctrl_knot_se3, requires_grad=True)
+            pose_optimizer = torch.optim.Adam([{"params": active_ctrl_knot_se3, "lr": self.config['pose_lr']}])
+        elif self.config["use_relative_pose_to_opt"]==2:  # fix the first pose
+            base_idx = active_ctrl_knot_idx[0]-1
+            if base_idx<0:
+                base_idx = 0
+                print("====================== Warning: Don't fix the first pose ======================")
+            ctrl_knot_len = len(active_ctrl_knot_idx)
+            ctrl_knot_se3_base = self.ctrl_knot_se3_all[base_idx] 
+            ctrl_knot_se3_rel_opt = pp.identity_se3(ctrl_knot_len)
+            for ii in range(ctrl_knot_len):
+                ctrl_knot_se3_rel_opt[ii] = (self.ctrl_knot_se3_all[active_ctrl_knot_idx[ii]].Exp()*(ctrl_knot_se3_base.Inv().Exp())).Log()
+            ctrl_knot_se3_rel_opt = torch.nn.Parameter(ctrl_knot_se3_rel_opt, requires_grad=True)
+            pose_optimizer = torch.optim.Adam([{"params": ctrl_knot_se3_rel_opt, "lr": self.config['pose_lr']}])
+        else:
+            raise ValueError("wrong option for pose optimization")
+        
+        active_num_batch = len(active_frame_id_all)
+        
+        blur_sigma = self.config["blur_sigma"]
+        batch_cnt = 0
+        loss_total = None
+        pose_optimizer.zero_grad()
+        
+        # densification setting
+        self.gs_cfg.refine_start_iter = self.config["mapping"]["refine_start_iter"]
+        self.gs_cfg.refine_stop_iter= self.config["mapping"]["refine_stop_iter"]
+        self.gs_cfg.refine_every = self.config["mapping"]["refine_every"]
+        
+        #=====================================Need To change======================================
+        # Densification Strategy
+        strategy_BA = DefaultStrategy(
+            verbose=True,
+            scene_scale=self.scene_scale,
+            prune_opa=self.gs_cfg.prune_opa,
+            grow_grad2d=self.gs_cfg.grow_grad2d,
+            grow_scale3d=self.gs_cfg.grow_scale3d,
+            prune_scale3d=self.gs_cfg.prune_scale3d,
+            # refine_scale2d_stop_iter=4000, # splatfacto behavior
+            refine_start_iter=self.gs_cfg.refine_start_iter,
+            refine_stop_iter=self.gs_cfg.refine_stop_iter,
+            refine_every=self.gs_cfg.refine_every,
+            
+            reset_every=self.gs_cfg.reset_every,
+            absgrad=self.gs_cfg.absgrad,
+            revised_opacity=self.gs_cfg.revised_opacity,
+        )
+        strategy_BA.check_sanity(self.splats, self.optimizers)
+        strategy_state_BA = strategy_BA.initialize_state()
+        #================================================================================================
+        
+        training_batch_size = self.config["BA"]["training_batch_size"]
+        visualize_every_iter = self.config["BA"]["visualize_every_iter"]
+        if _global_BA:
+            save_path = os.path.join(self.config["data"]["output"], self.config["data"]["exp_name"], "global_BA")
+        else:
+            save_path = os.path.join(self.config["data"]["output"], self.config["data"]["exp_name"], "BA")
+        
+
+        #==========================================
+        # Triangle specific parameters
+        need_delaunay = False
+        run_restricted_delaunay = self.opt.densify_until_iter + 1000
+
+
+        # define the scheduler for sigma and opacity
+        initial_sigma = self.opt.set_sigma
+        final_sigma = 0.0001
+        sigma_start = self.opt.sigma_start
+        total_iters = self.opt.sigma_until
+
+        init_opacity = 0.1
+        final_opacity = .9999
+        total_iters_opacity = self.opt.final_opacity_iter
+
+        lambda_weight = self.opt.lambda_weight
+        prune_triangles = self.opt.prune_triangles_threshold
+        prune_size = self.opt.prune_size
+        start_upsampling = self.opt.start_upsampling
+        splitt_large_triangles = self.opt.splitt_large_triangles
+        #==========================================
+
+
+        for i in range(_num_iters):
+            if i%100 == 0:
+                blur_sigma = blur_sigma/2
+
+            #===============================================================
+            if need_delaunay:
+                with torch.no_grad():
+                    self.triangles.run_restricted_delaunay()
+                need_delaunay = False
+
+            # Supersampling
+            if iter == start_upsampling:
+                self.triangles.scaling = self.opt.upscaling_factor
+            if iter == start_upsampling + 5000:
+                self.triangles.scaling = 4
+
+            self.triangles.update_learning_rate(_num_iters)
+
+            # Sigma schedule
+            if _num_iters < sigma_start:
+                current_sigma = initial_sigma
+            else:
+                progress = (_num_iters - sigma_start) / (total_iters - sigma_start)
+                progress = min(progress, 1.0)
+                current_sigma = initial_sigma - (initial_sigma - final_sigma) * progress
+            self.triangles.set_sigma(current_sigma)
+
+            # Every 1000 its we increase the levels of SH up to a maximum degree
+            if _num_iters % 1000 == 0:
+                self.triangles.oneupSHdegree()
+
+            #===================================================================
+                
+            
+            batch_cnt += 1
+            if self.config["use_relative_pose_to_opt"]==1:
+                active_ctrl_knot_se3 = (active_ctrl_knot_se3_base.Exp()*active_ctrl_knot_se3_rel_opt.Exp()).Log()
+            elif self.config["use_relative_pose_to_opt"]==2:
+                active_ctrl_knot_se3 = (ctrl_knot_se3_rel_opt.Exp()*ctrl_knot_se3_base.Exp()).Log() 
+            
+            loss_event = torch.zeros([1], dtype=torch.float64, device=self.device, requires_grad=True)
+            loss_no_event = torch.zeros([1], dtype=torch.float64, device=self.device, requires_grad=True)
+            loss_ssim = torch.zeros([1], dtype=torch.float64, device=self.device, requires_grad=True)
+            loss_white_balance = torch.zeros([1], dtype=torch.float64, device=self.device, requires_grad=True)
+            loss_tr = torch.zeros([1], dtype=torch.float64, device=self.device, requires_grad=True)
+            
+            # incremental random sampling
+            random_start_end_idx = []
+            for ii in range(incre_sampling_seg_num):
+                end_idx_ = incre_sampling_segs_end[ii]
+                winsize_ = np.random.randint(min_n_winsize, max_n_winsize)
+                start_idx_ = end_idx_-winsize_
+                random_start_end_idx.append([start_idx_, end_idx_])
+            indices = np.random.permutation(len(random_start_end_idx)).tolist()[:training_batch_size]
+            
+            list_img_ev_start = []
+            list_img_ev_end = []
+            list_gt_events_acc = []
+            list_syn_event_acc = []
+            
+            linlog_thres = self.config["event"]["linlog_thres"]
+            # incremental random sampling
+            for j in indices:
+                idx_ev_start = random_start_end_idx[j][0]
+                idx_ev_end = random_start_end_idx[j][1]
+                selected_event_stream = events_all[idx_ev_start:idx_ev_end]
+                t_ev_start = ts_all[idx_ev_start]
+                t_ev_end = ts_all[idx_ev_end]
+                
+                T_SE3_ev_start = self.get_poses_lie(active_ctrl_knot_se3, active_ctrl_knot_ts, t_ev_start, mode=traj_mode)
+                T_SE3_ev_end = self.get_poses_lie(active_ctrl_knot_se3, active_ctrl_knot_ts, t_ev_end, mode=traj_mode)
+                
+                c2w_start = T_SE3_ev_start.matrix().unsqueeze(0).cuda()  #[1, 4, 4]
+                render_pkg_start = self.render_triangles(c2w_start)
+                c2w_end = T_SE3_ev_end.matrix().unsqueeze(0).cuda()  #[1, 4, 4]
+                render_pkg_end = self.render_triangles(c2w_end)
+                
+                img_ev_start = render_pkg_start["render"]
+                img_ev_end = render_pkg_end["render"]
+                
+                #=================================Need To Change=========================================
+                strategy_BA.step_pre_backward(
+                    params=self.splats,
+                    optimizers=self.optimizers,
+                    state=strategy_state_BA,
+                    step=i,
+                    info=render_pkg_end["info"],
+                )
+                #================================================================================================
+                
+                if self.config["use_linLog"]:
+                    pred_linlog_start = lin_log(img_ev_start*255, linlog_thres=linlog_thres) # (B, Nevs, 1)
+                    pred_linlog_end = lin_log(img_ev_end*255, linlog_thres=linlog_thres) # (B, Nevs, 1)
+                    syn_event_acc = pred_linlog_end - pred_linlog_start
+                else:
+                    # syn_event_acc = (log(img_ev_end) - log(img_ev_start))
+                    eps = 0.1
+                    syn_event_acc = torch.log(img_ev_end**2.2+eps)-torch.log(img_ev_start**2.2+eps)
+                
+                # compute event loss
+                gt_events_acc = self.post_process_event_image(selected_event_stream, _sigma=blur_sigma)
+                # if self.config["use_mask_event_loss"]:
+                event_mask = (gt_events_acc.abs() != 0).float() 
+                no_event_mask = (gt_events_acc.abs() == 0).float()
+                
+                # if self.config["dataset"] == "vector":
+                #     loss_event = loss_event + (self.vector_mask * (gt_events_acc - syn_event_acc)**2).sum() / self.vector_mask.sum()
+                # else:
+                
+                # no-event loss
+                no_event_gaussian_cov = self.config["mapping"]["no_event_gaussian_cov"]
+                gt_no_events = self.config["event"]["threshold"] * no_event_gaussian_cov * torch.randn_like(gt_events_acc).cuda()
+                gt_no_events = gt_no_events*no_event_mask
+                
+                if self.config["mapping"]["color_channels"]==3:
+                    gt_events_acc = gt_events_acc.unsqueeze(-1).repeat(1, 1, 3)
+                    gt_no_events = gt_no_events.unsqueeze(-1).repeat(1, 1, 3)
+                    # gt_events_acc = np.tile(gt_events_acc[..., None], (1, 1, 3))
+                    gt_events_acc = gt_events_acc*self.color_mask
+                    syn_event_acc = syn_event_acc*self.color_mask
+                
+                if self.config["seprate_event_noevent_loss"]:
+                    loss_event = loss_event + (event_mask*(gt_events_acc - syn_event_acc)**2).sum() / event_mask.sum()
+                    loss_no_event = loss_no_event + (no_event_mask*(gt_no_events - syn_event_acc)**2).sum() / no_event_mask.sum()
+                else:
+                    gt_events_acc = gt_events_acc+gt_no_events
+                    loss_event = loss_event + ((gt_events_acc - syn_event_acc)**2).mean()
+                
+                if self.config["mapping"]["color_channels"]==3:
+                    loss_ssim = loss_ssim + compute_ssim_loss(gt_events_acc, syn_event_acc, channel=3)
+                else:
+                    loss_ssim = loss_ssim + compute_ssim_loss(gt_events_acc, syn_event_acc, channel=1)
+                
+                list_img_ev_start.append(img_ev_start.detach())
+                list_img_ev_end.append(img_ev_end.detach())
+                list_gt_events_acc.append(gt_events_acc)
+                list_syn_event_acc.append(syn_event_acc.detach())
+            
+            if self.config["mapping"]["use_white_balance_loss"]:
+                # white balance loss 
+                white_balance_weight = self.config["mapping"]["white_balance_weight"]
+                # loss_white_balance = white_balance_weight * (img_ev_end.mean() - 0.5) ** 2
+                loss_white_balance = white_balance_weight*torch.mean((img_ev_end - 0.5) ** 2)
+            
+            #========== TODO : Change code=================
+            # tikhonov regularization loss
+            tr_w = self.config["mapping"]["tr_loss_weight"]
+            loss_tr = tr_w*tikhonov_regularization(render_pkg_start["expected_depth"].squeeze().unsqueeze(-1))
+            
+            loss_event = loss_event/len(indices)
+            loss_ssim = loss_ssim/len(indices)
+            loss_no_event = loss_no_event/len(indices)
+            # summary the loss
+            factor_ = self.config["mapping"]["ssim_loss_factor_"]
+            loss_event = (1-factor_)*loss_event
+            loss_ssim = factor_*loss_ssim
+            
+            # # isotropic loss
+            # scaling = self.splats["scales"]  # [N, 3]
+            # isotropic_loss_all = torch.abs(scaling - scaling.mean(dim=1).view(-1, 1))
+            # iso_w = self.config["mapping"]["loss_isotropic_weight"]
+            # loss_isotropic = iso_w * isotropic_loss_all.mean()
+            
+            # loss_total = loss_event + loss_ssim + loss_isotropic+loss_white_balance
+            loss_total = loss_event + loss_ssim + loss_white_balance + loss_no_event + loss_tr
+            
+            loss_total.backward()
+
+            #======================================================
+            # Mesh Splatting Densification
+            image_size = render_pkg_start["scaling"].detach()
+            mask = image_size > self.triangles.image_size
+            self.triangles.image_size[mask] = image_size[mask]
+
+            importance_score = render_pkg_start["max_blending"].detach()
+            mask = importance_score > self.triangles.importance_score
+            self.triangles.importance_score[mask] = importance_score[mask]
+
+            pixel_count = render_pkg_start["triangle_was_rendered"].detach() # Not used but could be useful. Gives per triangle, the number of pixels it covered in the current render
+            mask = pixel_count > self.triangles.pixel_count
+            self.triangles.pixel_count[mask] = pixel_count[mask]
+
+            with torch.no_grad():
+                # Handle pruning operations
+                if _num_iters % 500 == 0 and _num_iters < run_restricted_delaunay:
+                    
+                    # Building masks to delete triangles
+                    triangle_vertex_weights = self.triangles.opacity_activation(
+                        self.triangles.vertex_weight[self.triangles._triangle_indices]
+                    ) 
+                    min_weights = triangle_vertex_weights.min(dim=1).values
+
+                    mask_opacity     = (min_weights <= prune_triangles).squeeze()              # delete if too low
+                    mask_importance  = (self.triangles.importance_score <= prune_triangles).squeeze()  # delete if too low
+                    mask_size        = (self.triangles.image_size > prune_size).squeeze()                 # delete if too big
+
+                    delete_mask = mask_opacity | mask_size
+
+                    # if number_of_training_views < 500: # only delete if the number of views are below 500. Otherwise, we might delete too much
+                    delete_mask = delete_mask | mask_importance
+
+                    keep_mask   = ~delete_mask 
+
+                    if _num_iters > self.opt.start_pruning:
+                        self.triangles.prune_triangles(keep_mask)
+                
+                    # We prune vertices that are no longer used
+                    device = self.triangles.vertices.device
+                    used_vertex_mask = torch.zeros(self.triangles.vertices.shape[0], 
+                                                dtype=torch.bool, 
+                                                device=device)
+                    if self.triangles._triangle_indices.numel() > 0:
+                        flat_indices = self.triangles._triangle_indices.flatten()
+                        used_vertex_mask[flat_indices] = True
+                    
+                    weight_mask = (self.triangles.get_vertex_weight.squeeze() >= prune_triangles)
+                    mask_out = self.triangles.vertices.shape[0]
+                    vertex_mask = weight_mask[:mask_out] | used_vertex_mask
+
+                    self.triangles._prune_vertices(vertex_mask)
+
+
+                    triangle_vertex_weights = self.triangles.opacity_activation(
+                        self.triangles.vertex_weight[self.triangles._triangle_indices]
+                    )  # [T,3]
+
+                    needs_densification = (_num_iters < self.opt.densify_until_iter and 
+                                        _num_iters % self.opt.densification_interval == 0 and 
+                                        _num_iters > self.opt.densify_from_iter)
+                    
+                    if needs_densification:
+                        self.triangles.add_new_gs_original(cap_max=self.opt.max_points, splitt_large_triangles=splitt_large_triangles)
+    
+
+                    if _num_iters > self.opt.start_opacity_floor:
+                        start_iter = self.opt.start_opacity_floor
+                        end_iter = total_iters_opacity  # the iteration where you want to reach final_opacity
+                        a = min(1.0, max(0.0, (_num_iters - start_iter) / max(1, end_iter - start_iter)))
+                        current_opacity = init_opacity + (final_opacity - init_opacity) * a
+                        current_opacity = min(current_opacity, final_opacity)
+                        self.triangles.update_min_weight(current_opacity)
+
+                        prune_triangles += 0.01 
+                        mask_out = self.triangles.vertices.shape[0]
+                        triangle_vertex_weights = self.triangles.get_vertex_weight[:mask_out][self.triangles._triangle_indices]
+                elif _num_iters == run_restricted_delaunay:
+                    need_delaunay = True
+                elif _num_iters % 500 == 0 and _num_iters > run_restricted_delaunay + 1000:
+
+                    if _num_iters > self.opt.start_opacity_floor:
+                        start_iter = self.opt.start_opacity_floor
+                        end_iter = total_iters_opacity  # the iteration where you want to reach final_opacity
+                        a = min(1.0, max(0.0, (_num_iters - start_iter) / max(1, end_iter - start_iter)))
+                        current_opacity = init_opacity + (final_opacity - init_opacity) * a
+                        current_opacity = min(current_opacity, final_opacity)
+                        self.triangles.update_min_weight(current_opacity)
+
+                        prune_triangles += 0.01 
+                        mask_out = self.triangles.vertices.shape[0]
+                        triangle_vertex_weights = self.triangles.get_vertex_weight[:mask_out][self.triangles._triangle_indices]
+                
+
+                if _num_iters < self.opt.iterations:
+                    self.triangles.optimizer.step()
+                    self.triangles.optimizer.zero_grad(set_to_none = True)
+
+            #======================================================
+            
+            if _opt_pose:
+                pose_optimizer.step()
+                pose_optimizer.zero_grad()
+                
+
+            # loss_total = None
+            #========== TODO : Need To Change the Code =============================
+            # for optimizer in self.optimizers.values():
+            #     optimizer.step()
+            #     optimizer.zero_grad(set_to_none=True)
+            
+            # densification
+            # strategy_BA.step_post_backward(
+            #     params=self.splats,
+            #     optimizers=self.optimizers,
+            #     state=strategy_state_BA,
+            #     step=i,
+            #     info=render_pkg_end["info"],
+            # )
+            #===============================================================================
+
+            # visualization
+            frame_id_vis = frame_id_all[-1]
+            if i % visualize_every_iter == 0 and self.config["visualize_inter_img"]:
+                print_str = f"iter {i}, loss={loss_total.item()}, event={loss_event.item()}, ssim={loss_ssim.item()}, white={loss_white_balance.item()}, noevent={loss_no_event.item()}, tr={loss_tr.item()}"
+                print(print_str)
+                
+                with torch.no_grad():
+                    # plot pose estimation
+                    accum_est_poses_Rt = []
+                    accum_gt_poses_Rt = []
+                    
+                    tag = f"chunk_BA_{num_batch:03}_{i:04}"
+                    
+                    # save ply file
+                    # ply_path = os.path.join(save_path, f"pointCloud_f{frame_id_vis}_it{i}.ply")
+                    # self.save_ply(ply_path)
+                    
+                    for n in range(active_num_batch):
+                        k = active_frame_id_all[n]
+                        ts = active_frame_ts_all[n]                        
+                        accum_est_poses_Rt.append(self.get_poses_lie(active_ctrl_knot_se3, active_ctrl_knot_ts, ts, mode=traj_mode).matrix())
+                        if traj_mode == "linear":
+                            accum_gt_poses_Rt.append(BA_batch[n]['c2w'].squeeze())
+                        else:
+                            accum_gt_poses_Rt.append(BA_batch[n+1]['c2w'].squeeze())
+                    
+                    # plot 
+                    if self.config["dataset"] == "rpg_evo":
+                        accum_gt_poses_Rt = accum_est_poses_Rt
+                    pose_evaluation(accum_gt_poses_Rt, accum_est_poses_Rt, 1, save_path, "pose", f"BA_f{frame_id_vis:03}_{i:04}")
+                    save_pose_as_kitti_evo(accum_gt_poses_Rt, accum_est_poses_Rt, save_path, f"BA_f{frame_id_vis:03}_{i:04}")
+                    
+                    if self.config["visualize_inter_img"]:
+                        # save intermediate images 
+                        images_combined = []
+                        for m in range(len(list_img_ev_start)):
+                            diff = (list_gt_events_acc[m] - list_syn_event_acc[m]) **2
+                            
+                            if self.config["mapping"]["color_channels"] == 1:
+                                gt_events_acc = render_ev_accumulation(list_gt_events_acc[m].cpu().numpy(), self.dataset.H, self.dataset.W)
+                                diff = np.repeat(diff.detach().abs().cpu().numpy()[:, :, np.newaxis], repeats=3, axis=2)  
+                                syn_event_acc = np.repeat(list_syn_event_acc[m].detach().abs().cpu().numpy()[:, :, np.newaxis], repeats=3, axis=2) 
+                                img_ev_start = np.repeat(list_img_ev_start[m].detach().cpu().numpy()[:, :, np.newaxis], repeats=3, axis=2)
+                                img_ev_end = np.repeat(list_img_ev_end[m].detach().cpu().numpy()[:, :, np.newaxis], repeats=3, axis=2)
+                            else:
+                                gt_events_acc = render_ev_accumulation(list_gt_events_acc[m].sum(-1).cpu().numpy(), self.dataset.H, self.dataset.W)
+                                img_ev_start = list_img_ev_start[m].detach().cpu().numpy()
+                                img_ev_end = list_img_ev_end[m].detach().cpu().numpy()
+                                syn_event_acc = list_syn_event_acc[m].detach().abs().cpu().numpy()
+                                diff = diff.detach().cpu().numpy()
+                            
+                            image_combined = np.concatenate([img_ev_start,img_ev_end, gt_events_acc, syn_event_acc, diff], axis=1)
+                            images_combined.append(image_combined)
+                        
+                        images_combined = np.concatenate(images_combined, axis=0)
+                        images_combined =  to8b(images_combined)
+                        img_path = os.path.join(save_path, f"BA_f{frame_id_vis:03}_{i:04}" + "_img.jpg")  
+                        imageio.imwrite(img_path, images_combined)
+        
+        if self.config["use_relative_pose_to_opt"]==1:
+            active_ctrl_knot_se3 = (active_ctrl_knot_se3_base.Exp()*active_ctrl_knot_se3_rel_opt.Exp()).Log()
+        elif self.config["use_relative_pose_to_opt"]==2:
+            active_ctrl_knot_se3 = (ctrl_knot_se3_rel_opt.Exp()*ctrl_knot_se3_base.Exp()).Log()
+        
+        # update est_poses
+        for n in range(active_num_batch):
+            k = active_frame_id_all[n]
+            ts = active_frame_ts_all[n]                      
+            self.est_c2w_data[k] = self.get_poses_lie(active_ctrl_knot_se3, active_ctrl_knot_ts, ts, mode=traj_mode).matrix().cuda()
+            self.est_c2w_ts[k] = ts
+        
+        if self.config["visualize_inter_img"] or _global_BA:
+            if self.config["render_eventview_img"]:
+                # render ALL images 
+                with torch.no_grad():
+                    for n in range(active_num_batch):
+                        k = active_frame_id_all[n]
+                        ts = active_frame_ts_all[n]                      
+                        T_SE3 = self.get_poses_lie(active_ctrl_knot_se3, active_ctrl_knot_ts, ts, mode=traj_mode)
+                        
+                        c2w_ = T_SE3.matrix().unsqueeze(0).cuda()  #[1, 4, 4]
+                        rendered_img = self.render_triangles(c2w_)["render"]
+                                
+                                
+                        event_img_ = rendered_img.detach().cpu().numpy()
+                        event_img_ =  to8b(event_img_)
+                        im_name = f"BA_f{frame_id_vis:03}_f{k}" + "_img.jpg"
+                        imageio.imwrite(os.path.join(save_path, im_name), event_img_)
+                        
+                        # ======= TODO : Need To Change ===============================
+                        if self.config["render_tumvie_rgbCam_img"] and self.config["dataset"]=="tum_vie":
+                            # render rbg camera image
+                            img_rgbCam = self.render_with_gsplat(self.gs_model, T_se3, render_tumvie_rgb=True)['image']
+                            img_rgbCam = np.repeat(img_rgbCam.detach().cpu().numpy()[:, :, np.newaxis], repeats=3, axis=2)
+                            img_path = os.path.join(save_path, f"BA_f{frame_id_vis:03}_f{k}" + "_img_rgbCam.jpg")  
+                            imageio.imwrite(img_path, to8b(img_rgbCam))
+                        # ======================================================================    
+            # plot the whole trajectory
+            if self.config["dataset"] == "rpg_evo":
+                self.pose_gt = self.est_c2w_data
+            pose_evaluation(self.pose_gt, self.est_c2w_data, 1, save_path, "pose", f"BA_f{frame_id_vis:03}_whole")
+            save_pose_as_kitti_evo(self.pose_gt, self.est_c2w_data, save_path, f"BA_f{frame_id_vis:03}_whole")
+        
+        
+        # save control knot pose
+        for ii in range(len(active_ctrl_knot_idx)):
+            idx = active_ctrl_knot_idx[ii]
+            self.ctrl_knot_se3_all[idx] = active_ctrl_knot_se3[ii].detach().clone()  # [], cuda
+        
+        print("======================= finished BA  =========================")
+            
            
 
     # -------------------------------------------------------------------------
@@ -2198,7 +2908,7 @@ class MeshSLAMTrainer:
                 
                 # initialize...
                 # TODO : Check for the without depth initialization
-                self.initialization(init_batch, niters=self.config['num_opti_steps_for_init'], traj_mode='linear', depth_map=depth_map)
+                # self.initialization(init_batch, niters=self.config['num_opti_steps_for_init'], traj_mode='linear', depth_map=depth_map)
                 
                 bInitIsDone = True
             else:
@@ -2225,21 +2935,37 @@ class MeshSLAMTrainer:
                                                             SE3_to_se3(self.est_c2w_data[cur_frame_id-1][:3,:4]).cuda(), 
                                                             SE3_to_se3(self.est_c2w_data[cur_frame_id][:3,:4]).cuda())
                         # self.gs_model.add_new_points(new_pcd, 8.25)
-                        feature_dim = 32 if self.gs_cfg.app_opt else None
+                        # feature_dim = 32 if self.gs_cfg.app_opt else None
+                        feature_dim = None
                         print(f"============================= point num:{new_pcd.points.shape[0]} ===============================")
                         if(new_pcd.points.shape[0]>50):
-                            new_gs = pcd_2_gs(
-                                points= new_pcd.points.detach(),
-                                init_opacity=self.gs_cfg.init_opa,
-                                init_scale=self.gs_cfg.init_scale,
-                                scene_scale=self.scene_scale,
-                                sh_degree=self.gs_cfg.sh_degree,
-                                feature_dim=feature_dim,
-                                device=self.device,
-                                )
-                            add_new_gs(self.splats, self.optimizers, new_gs)
-                            print("Number of New GS:", len(new_gs["means"]))
-                            print("Number of GS:", len(self.splats["means"]))
+                            # TODO : Change the code
+                            new_triangles = TriangleModel(sh_degree = 0, config=self.config)
+                            new_triangles.create_from_pcd(new_pcd, radii=None, opacity=self.opt.set_weight, set_sigma=self.opt.set_sigma)
+                            
+                            new_triangles.training_setup(
+                                self.opt,
+                                self.opt.feature_lr,
+                                self.opt.weight_lr,
+                                self.opt.lr_triangles_points_init,
+                            )
+
+                            self.triangles.densification_postfix(new_triangles.vertices, new_triangles.vertix_weight, new_triangles._features_dc, new_triangles._features_rest, new_triangles._triangle_indices)
+                            
+                            # new_gs = pcd_2_gs(
+                            #     points= new_pcd.points.detach(),
+                            #     init_opacity=self.gs_cfg.init_opa,
+                            #     init_scale=self.gs_cfg.init_scale,
+                            #     scene_scale=self.scene_scale,
+                            #     sh_degree=self.gs_cfg.sh_degree,
+                            #     feature_dim=feature_dim,
+                            #     device=self.device,
+                            #     )
+                            # add_new_gs(self.splats, self.optimizers, new_gs)
+                            # print("Number of New GS:", len(new_gs["means"]))
+                            # print("Number of GS:", len(self.splats["means"]))
+                            print("********** Number of Vertices :", len(self.triangles.vertices))
+                            print("********** Number of Trianges :", len(self.triangles._triangles))
                         else:
                             print("Not enough points to create a new GS, skipped.")
                     
