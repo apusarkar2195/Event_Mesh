@@ -1,4 +1,4 @@
 inherit_from: "configs/rgbd/replica/base_config.yaml"
 Dataset:
-  dataset_path: "datasets/replica/room0/"
+  dataset_path: "/media/vplab/ExtremeSSD1/Apu/Triangle_SLAM/ts-slam/datasets/Replica/room0/"
   single_thread: False

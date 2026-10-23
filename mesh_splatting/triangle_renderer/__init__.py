@@ -101,7 +101,8 @@ def compute_image_2d_pytorch_exact(vertices, projmatrix, W, H):
     return image_2D_pytorch
 
 
-def render(viewpoint_camera, pc : TriangleModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, optimize_pose_only = False):
+# def render(viewpoint_camera, pc : TriangleModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, optimize_pose_only = False):
+def render(img_h, img_w, FoVx, FoVy, world_view_transform, full_proj_transform, projection_matrix, camera_center, pc : TriangleModel, pipe, bg_color : torch.Tensor, scaling_modifier = 1.0, override_color = None, optimize_pose_only = False):
     """
     Render the scene. 
     
@@ -117,18 +118,18 @@ def render(viewpoint_camera, pc : TriangleModel, pipe, bg_color : torch.Tensor, 
     vertex_index = pc._triangle_indices.shape[0]
 
     # Set up rasterization configuration
-    tanfovx = math.tan(viewpoint_camera.FoVx * 0.5)
-    tanfovy = math.tan(viewpoint_camera.FoVy * 0.5)
+    tanfovx = math.tan(FoVx * 0.5)
+    tanfovy = math.tan(FoVy * 0.5)
 
-    H_init = int(viewpoint_camera.image_height)
-    W_init = int(viewpoint_camera.image_width)
+    H_init = int(img_h)
+    W_init = int(img_w)
 
     upsample = pc.scaling
 
     H = upsample * H_init
     W = upsample * W_init
 
-    proj_matrix_raw = viewpoint_camera.projection_matrix
+    proj_matrix_raw = projection_matrix
 
 
     min_triangle_area_pixels = 0.5
@@ -144,13 +145,13 @@ def render(viewpoint_camera, pc : TriangleModel, pipe, bg_color : torch.Tensor, 
         tanfovy=tanfovy,
         bg=bg_color,
         scale_modifier=scaling_modifier,
-        viewmatrix=viewpoint_camera.world_view_transform,
-        projmatrix=viewpoint_camera.full_proj_transform,
+        viewmatrix=world_view_transform,
+        projmatrix=full_proj_transform,
         projmatrix_raw=proj_matrix_raw,
-        cx=viewpoint_camera.cx if viewpoint_camera.cx is not None else 0,
-        cy=viewpoint_camera.cy if viewpoint_camera.cy is not None else 0,
+        cx=0,
+        cy=0,
         sh_degree=pc.active_sh_degree,
-        campos=viewpoint_camera.camera_center,
+        campos=camera_center,
         prefiltered=False,
         debug=pipe.debug,
         min_triangle_area_pixels=min_triangle_area_pixels,
@@ -169,7 +170,7 @@ def render(viewpoint_camera, pc : TriangleModel, pipe, bg_color : torch.Tensor, 
     if override_color is None:
         if pipe.convert_SHs_python:
             shs_view = pc.get_features.transpose(1, 2).view(-1, 3, (pc.max_sh_degree+1)**2)
-            dir_pp = (pc.get_xyz - viewpoint_camera.camera_center.repeat(pc.get_features.shape[0], 1))
+            dir_pp = (pc.get_xyz - camera_center.repeat(pc.get_features.shape[0], 1))
             dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True)
             sh2rgb = eval_sh(pc.active_sh_degree, shs_view, dir_pp_normalized)
             colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
@@ -188,8 +189,8 @@ def render(viewpoint_camera, pc : TriangleModel, pipe, bg_color : torch.Tensor, 
         shs = shs,
         colors_precomp = colors_precomp,
         scaling = scaling,
-        w=viewpoint_camera.cam_rot_delta,
-        trans=viewpoint_camera.cam_trans_delta,
+        w=None,
+        trans=None,
        )
 
     radii = radii[:vertex_index]
@@ -208,14 +209,14 @@ def render(viewpoint_camera, pc : TriangleModel, pipe, bg_color : torch.Tensor, 
     render_depth_median   = torch.nan_to_num(ds[8:9], 0, 0)
 
     # transform normal from view space to world space
-    render_normal = (render_normal.permute(1,2,0) @ (viewpoint_camera.world_view_transform[:3,:3].T)).permute(2,0,1)
+    render_normal = (render_normal.permute(1,2,0) @ (world_view_transform[:3,:3].T)).permute(2,0,1)
 
     # gets the id per pixel of the triangle influencing it (not downsampled)
     render_id = allmap[6:7]
 
     surf_depth = render_depth_median
     # assume the depth points form the 'surface' and generate pseudo surface normal for regularizations.
-    surf_normal = depth_to_normal(viewpoint_camera, surf_depth)
+    surf_normal = depth_to_normal(img_h, img_w, world_view_transform, full_proj_transform, surf_depth)
     surf_normal = surf_normal.permute(2,0,1)
     # remember to multiply with accum_alpha since render_normal is unnormalized.
     surf_normal = surf_normal * render_alpha.detach()
@@ -225,9 +226,9 @@ def render(viewpoint_camera, pc : TriangleModel, pipe, bg_color : torch.Tensor, 
     vertex_rendered = torch.zeros(V, device=triangles_indices.device, dtype=was_rendered.dtype)
     vertex_rendered.index_fill_(0, idx, 1)
 
-    vertices_cam = transform_point_4x3(vertices, viewpoint_camera.world_view_transform)  # (V, 3)
+    vertices_cam = transform_point_4x3(vertices, world_view_transform)  # (V, 3)
     vertex_depths_pytorch = vertices_cam[:, 2]  # (V,)
-    image_2D_pytorch = compute_image_2d_pytorch_exact(vertices, viewpoint_camera.full_proj_transform, W_init, H_init)
+    image_2D_pytorch = compute_image_2d_pytorch_exact(vertices, full_proj_transform, W_init, H_init)
     if image_2D_pytorch.requires_grad:
         image_2D_pytorch.retain_grad()
 

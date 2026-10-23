@@ -426,6 +426,39 @@ class TriangleModel:
         # REMINDER: PCD here is not a torch tensor, should change back for mapping
         return pcd, features, vert_weight, radii
 
+    # TODO : Create pcd from the random points.
+    def create_pcd_from_random_points(self, scene_scale, init_num_pts=100000):
+        points = scene_scale * (torch.rand((init_num_pts, 3)) * 2 -1) # N,3
+        rgb = torch.rand((init_num_pts, 3)) # N,3
+        
+        fused_point_cloud = torch.from_numpy(np.asarray(points)).float().cuda()
+        fused_color = RGB2SH(torch.from_numpy(np.asarray(rgb)).float().cuda())
+        features = ( torch.zeros(fused_color.shape[0], 3, (self.max_sh_degree + 1) ** 2).float().cuda() ) # N,3,K
+        features[:, :3, 0] = fused_color
+        features[:, 3:, 1:] = 0.0
+
+        pcd = BasicPointCloud(points=np.asarray(points), colors=np.asarray(rgb), normals=None)
+
+        total_points = np.asarray(points)
+        dist2 = torch.clamp_min(
+            distCUDA2(torch.from_numpy(np.asarray(total_points)).float().cuda()), 1e-7     # N,
+        )
+        init_size = 2.23 * 0.7
+        raddi = init_size * torch.sqrt(dist2).unsqueeze(1) # N,1
+        raddi_flat = raddi.squeeze()
+        raddi_flat = torch.nan_to_num(raddi_flat, nan=0.0, posinf=1e6, neginf=1e-6)
+        raddi = raddi_flat.unsqueeze(1) # N,1
+
+        opacities = (
+            0.5 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda")  # N,1
+        )
+
+        vert_weight = inverse_sigmoid(
+            opacities * torch.ones( (fused_point_cloud.shape[0], 1), dtype=torch.float32, device="cuda" )
+        )  
+
+        return pcd, features, vert_weight, raddi
+
 
     def extend_from_pcd(self, cam, pcd, radii, features, weights, under_reconstructed_mask=None, kf_id=0):
         # densification_postfix
@@ -813,6 +846,13 @@ class TriangleModel:
         pcd_points = np.asarray(pcd.points)            # [N,3] (CPU, np)
         pcd_colors = np.asarray(pcd.colors)            # [N,3] (CPU, np)
 
+        if radii == None:
+            dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd_points)).float().cuda()), 1e-7) # N,
+            radii = init_size * torch.sqrt(dist2).unsqueeze(1) # N,1
+            raddi_flat = raddi.squeeze()
+            raddi_flat = torch.nan_to_num(raddi_flat, nan=0.0, posinf=1e6, neginf=1e-6)
+            raddi = raddi_flat.unsqueeze(1) # N,1  
+
         fused_point_cloud = torch.tensor(pcd_points, dtype=torch.float32, device="cuda")  # [N,3]
         fused_color_rgb   = torch.tensor(pcd_colors, dtype=torch.float32, device="cuda")  # [N,3]
         fused_color_sh    = RGB2SH(fused_color_rgb)                                       # [N,3]
@@ -843,8 +883,11 @@ class TriangleModel:
         # --- Create 1 independent triangle per point (returns [N,3,3]) ---
         pcd_normals = np.asarray(pcd.normals)
         normals_tensor = None
-        if pcd_normals is not None and np.abs(pcd_normals).sum() > 0:
-            normals_tensor = torch.tensor(pcd_normals, dtype=torch.float32, device="cuda")
+        #================================================================================================
+        # TODO : commented code as the pcd.normals are None and not applicable 
+        # if pcd_normals is not None and np.abs(pcd_normals).sum() > 0:
+        #     normals_tensor = torch.tensor(pcd_normals, dtype=torch.float32, device="cuda")
+        #================================================================================================
         points_per_triangle = generate_triangles_in_chunks(x, y, z, radii, nb_points=nb_points, normals=normals_tensor)  # [N,3,3]
 
         # --- Flatten to vertex buffer and build triangle indices ---
@@ -863,6 +906,11 @@ class TriangleModel:
         # --- Parameters aligned with your Delaunay initializer ---
         self.vertices = nn.Parameter(_points.requires_grad_(True))                 # [3N,3]
         self._triangle_indices = faces                                            # [N,3] int32
+
+        if opacity == None:
+            opacity = (
+            0.5 * torch.ones((fused_point_cloud.shape[0], 1), dtype=torch.float, device="cuda")  # N,1
+            )  
 
         vert_weight = inverse_sigmoid(
             opacity * torch.ones((self.vertices.shape[0], 1), dtype=torch.float32, device="cuda")

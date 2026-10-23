@@ -6,14 +6,14 @@ import os, cv2
 import matplotlib.pyplot as plt
 import math
 
-def depths_to_points(view, depthmap):
-    c2w = (view.world_view_transform.T).inverse()
-    W, H = view.image_width, view.image_height
+def depths_to_points(image_height, image_width, world_view_transform, full_proj_transform, depthmap):
+    c2w = (world_view_transform.T).inverse()
+    W, H = image_width, image_height
     ndc2pix = torch.tensor([
         [W / 2, 0, 0, (W) / 2],
         [0, H / 2, 0, (H) / 2],
         [0, 0, 0, 1]]).float().cuda().T
-    projection_matrix = c2w.T @ view.full_proj_transform
+    projection_matrix = c2w.T @ full_proj_transform
     intrins = (projection_matrix @ ndc2pix)[:3,:3].T
     
     grid_x, grid_y = torch.meshgrid(torch.arange(W, device='cuda').float(), torch.arange(H, device='cuda').float(), indexing='xy')
@@ -23,12 +23,12 @@ def depths_to_points(view, depthmap):
     points = depthmap.reshape(-1, 1) * rays_d + rays_o
     return points
 
-def depth_to_normal(view, depth):
+def depth_to_normal(image_height, image_width, world_view_transform, full_proj_transform, depth):
     """
         view: view camera
         depth: depthmap 
     """
-    points = depths_to_points(view, depth).reshape(*depth.shape[1:], 3)
+    points = depths_to_points(image_height, image_width, world_view_transform, full_proj_transform, depth).reshape(*depth.shape[1:], 3)
     output = torch.zeros_like(points)
     dx = torch.cat([points[2:, 1:-1] - points[:-2, 1:-1]], dim=0)
     dy = torch.cat([points[1:-1, 2:] - points[1:-1, :-2]], dim=1)
