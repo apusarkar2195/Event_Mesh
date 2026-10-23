@@ -882,6 +882,7 @@ class MeshSLAMTrainer:
                         self.dataset.fovx, self.dataset.fovy, world_2_cam,
                         full_proj_trans, self.projection_matrix,
                         camera_center, self.triangles, self.pipe, self.background)    
+             
 
         if self.config["mapping"]["color_channels"] == 3:
             rets["render"] = rets["render"].permute(1, 2, 0) # H,W,3
@@ -1496,11 +1497,18 @@ class MeshSLAMTrainer:
             
             # loss_total = loss_event + loss_ssim + loss_isotropic + loss_rgb 
             loss_total = loss_event + loss_ssim + loss_no_event + loss_white_balance + loss_tr
+
+            # g = torch.autograd.grad(loss_total, c2w_start, retain_graph=True, allow_unused=True)
+            # print("d loss / d c2w:", g)
             
             # optimize 
             pose_optimizer.zero_grad()
             loss_total.backward()
             torch.cuda.synchronize()
+
+            # print("grad:", ctrl_knot_se3.grad is None,
+            #     None if ctrl_knot_se3.grad is None else ctrl_knot_se3.grad.abs().max().item())
+            # print("c2w requires_grad:", c2w_start.requires_grad)
 
             #======================================================
             # Mesh Splatting Densification
@@ -1618,7 +1626,14 @@ class MeshSLAMTrainer:
             #     optimizer.zero_grad(set_to_none=True)
             
             # if self.config["opt_pose"] and i>1000:
+
+
             pose_optimizer.step()
+
+            # before = ctrl_knot_se3.detach().clone()
+            # pose_optimizer.step()
+            # print("max pose delta:", (ctrl_knot_se3.detach() - before).abs().max().item())
+
             # if self.config["opt_pose"]:
             #     if (depth_map is None) or (depth_map is not None and iter>200):
             #         pose_optimizer.step()

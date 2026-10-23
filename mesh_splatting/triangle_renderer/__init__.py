@@ -114,6 +114,15 @@ def render(img_h, img_w, FoVx, FoVy, world_view_transform, full_proj_transform, 
     vertices = pc.get_vertices # contains all the vertices of the triangles
     vertex_weights = pc.get_vertex_weight  # contains the weights of the vertices for each vertex in the triangles
     scaling = torch.zeros_like(triangles_indices[:, 0], dtype=pc.get_triangles_points.dtype, requires_grad=True, device="cuda").detach()
+    
+    #==================================================================================================
+    R_T = world_view_transform[:3, :3]          # this is R^T (matrix is stored transposed)
+    t   = world_view_transform[3, :3]
+    vertices_cam = vertices @ R_T + t           # differentiable wrt the pose
+
+    I4     = torch.eye(4, device=vertices.device, dtype=world_view_transform.dtype)
+    cam0   = torch.zeros(3, device=vertices.device, dtype=world_view_transform.dtype)
+    #===================================================================================================
 
     vertex_index = pc._triangle_indices.shape[0]
 
@@ -138,6 +147,27 @@ def render(img_h, img_w, FoVx, FoVy, world_view_transform, full_proj_transform, 
         min_triangle_area_pixels = pc.config.get("Training", {}).get("min_triangle_area_pixels", 0.5)
         opacity_aggregation = pc.config.get("Training", {}).get("opacity_aggregation", "mean")
 
+    # raster_settings = TriangleRasterizationSettings(
+    #     image_height=H,
+    #     image_width=W,
+    #     tanfovx=tanfovx,
+    #     tanfovy=tanfovy,
+    #     bg=bg_color,
+    #     scale_modifier=scaling_modifier,
+    #     viewmatrix=world_view_transform,
+    #     projmatrix=full_proj_transform,
+    #     projmatrix_raw=proj_matrix_raw,
+    #     cx=0,
+    #     cy=0,
+    #     sh_degree=pc.active_sh_degree,
+    #     campos=camera_center,
+    #     prefiltered=False,
+    #     debug=pipe.debug,
+    #     min_triangle_area_pixels=min_triangle_area_pixels,
+    #     optimize_pose_only=optimize_pose_only,
+    #     opacity_min=(opacity_aggregation == "min"),
+    # )
+
     raster_settings = TriangleRasterizationSettings(
         image_height=H,
         image_width=W,
@@ -145,19 +175,20 @@ def render(img_h, img_w, FoVx, FoVy, world_view_transform, full_proj_transform, 
         tanfovy=tanfovy,
         bg=bg_color,
         scale_modifier=scaling_modifier,
-        viewmatrix=world_view_transform,
-        projmatrix=full_proj_transform,
+        viewmatrix=I4,
+        projmatrix=projection_matrix,
         projmatrix_raw=proj_matrix_raw,
         cx=0,
         cy=0,
         sh_degree=pc.active_sh_degree,
-        campos=camera_center,
+        campos=cam0,
         prefiltered=False,
         debug=pipe.debug,
         min_triangle_area_pixels=min_triangle_area_pixels,
         optimize_pose_only=optimize_pose_only,
         opacity_min=(opacity_aggregation == "min"),
     )
+
 
     rasterizer = TriangleRasterizer(raster_settings=raster_settings)
 
@@ -181,8 +212,20 @@ def render(img_h, img_w, FoVx, FoVy, world_view_transform, full_proj_transform, 
         colors_precomp = override_color
 
     # Rasterize visible triangles to image, obtain their radii (on screen). 
+    # rendered_image, radii, scaling, allmap, max_blending, was_rendered  = rasterizer(
+    #     vertices=vertices,
+    #     triangles_indices=triangles_indices,
+    #     vertex_weights=vertex_weights.squeeze(),
+    #     sigma=sigma,
+    #     shs = shs,
+    #     colors_precomp = colors_precomp,
+    #     scaling = scaling,
+    #     w=None,
+    #     trans=None,
+    #    )
+
     rendered_image, radii, scaling, allmap, max_blending, was_rendered  = rasterizer(
-        vertices=vertices,
+        vertices=vertices_cam,
         triangles_indices=triangles_indices,
         vertex_weights=vertex_weights.squeeze(),
         sigma=sigma,
