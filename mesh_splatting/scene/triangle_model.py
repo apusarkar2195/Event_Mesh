@@ -849,9 +849,9 @@ class TriangleModel:
         if radii == None:
             dist2 = torch.clamp_min(distCUDA2(torch.from_numpy(np.asarray(pcd_points)).float().cuda()), 1e-7) # N,
             radii = init_size * torch.sqrt(dist2).unsqueeze(1) # N,1
-            raddi_flat = raddi.squeeze()
-            raddi_flat = torch.nan_to_num(raddi_flat, nan=0.0, posinf=1e6, neginf=1e-6)
-            raddi = raddi_flat.unsqueeze(1) # N,1  
+            radii_flat = radii.squeeze()
+            radii_flat = torch.nan_to_num(radii_flat, nan=0.0, posinf=1e6, neginf=1e-6)
+            radii = radii_flat.unsqueeze(1) # N,1  
 
         fused_point_cloud = torch.tensor(pcd_points, dtype=torch.float32, device="cuda")  # [N,3]
         fused_color_rgb   = torch.tensor(pcd_colors, dtype=torch.float32, device="cuda")  # [N,3]

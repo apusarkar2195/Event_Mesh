@@ -977,7 +977,7 @@ class MeshSLAMTrainer:
 
         # create pcd
         # pcd = BasicPointCloud(points=points, colors=colors, normals=normals)
-        pcd = BasicPointCloud(points=points.detach().cpu(), colors=SH2RGB(shs), normals=normals)
+        pcd = BasicPointCloud(points=points.detach().cpu(), colors=SH2RGB(shs), normals=normals.detach().cpu())
 
         return pcd    
 
@@ -1293,7 +1293,7 @@ class MeshSLAMTrainer:
                     self.opt.lr_triangles_points_init,
                 )
 
-                self.triangles.densification_postfix(new_triangles.vertices, new_triangles.vertix_weight, new_triangles._features_dc, new_triangles._features_rest, new_triangles._triangle_indices)
+                self.triangles.densification_postfix(new_triangles.vertices, new_triangles.vertex_weight, new_triangles._features_dc, new_triangles._features_rest, new_triangles._triangle_indices)
                 
                 
                 # new_gs = pcd_2_gs(
@@ -2343,30 +2343,30 @@ class MeshSLAMTrainer:
         pose_optimizer.zero_grad()
         
         # densification setting
-        self.gs_cfg.refine_start_iter = self.config["mapping"]["refine_start_iter"]
-        self.gs_cfg.refine_stop_iter= self.config["mapping"]["refine_stop_iter"]
-        self.gs_cfg.refine_every = self.config["mapping"]["refine_every"]
+        # self.gs_cfg.refine_start_iter = self.config["mapping"]["refine_start_iter"]
+        # self.gs_cfg.refine_stop_iter= self.config["mapping"]["refine_stop_iter"]
+        # self.gs_cfg.refine_every = self.config["mapping"]["refine_every"]
         
         #=====================================Need To change======================================
         # Densification Strategy
-        strategy_BA = DefaultStrategy(
-            verbose=True,
-            scene_scale=self.scene_scale,
-            prune_opa=self.gs_cfg.prune_opa,
-            grow_grad2d=self.gs_cfg.grow_grad2d,
-            grow_scale3d=self.gs_cfg.grow_scale3d,
-            prune_scale3d=self.gs_cfg.prune_scale3d,
-            # refine_scale2d_stop_iter=4000, # splatfacto behavior
-            refine_start_iter=self.gs_cfg.refine_start_iter,
-            refine_stop_iter=self.gs_cfg.refine_stop_iter,
-            refine_every=self.gs_cfg.refine_every,
+        # strategy_BA = DefaultStrategy(
+        #     verbose=True,
+        #     scene_scale=self.scene_scale,
+        #     prune_opa=self.gs_cfg.prune_opa,
+        #     grow_grad2d=self.gs_cfg.grow_grad2d,
+        #     grow_scale3d=self.gs_cfg.grow_scale3d,
+        #     prune_scale3d=self.gs_cfg.prune_scale3d,
+        #     # refine_scale2d_stop_iter=4000, # splatfacto behavior
+        #     refine_start_iter=self.gs_cfg.refine_start_iter,
+        #     refine_stop_iter=self.gs_cfg.refine_stop_iter,
+        #     refine_every=self.gs_cfg.refine_every,
             
-            reset_every=self.gs_cfg.reset_every,
-            absgrad=self.gs_cfg.absgrad,
-            revised_opacity=self.gs_cfg.revised_opacity,
-        )
-        strategy_BA.check_sanity(self.splats, self.optimizers)
-        strategy_state_BA = strategy_BA.initialize_state()
+        #     reset_every=self.gs_cfg.reset_every,
+        #     absgrad=self.gs_cfg.absgrad,
+        #     revised_opacity=self.gs_cfg.revised_opacity,
+        # )
+        # strategy_BA.check_sanity(self.splats, self.optimizers)
+        # strategy_state_BA = strategy_BA.initialize_state()
         #================================================================================================
         
         training_batch_size = self.config["BA"]["training_batch_size"]
@@ -2482,13 +2482,13 @@ class MeshSLAMTrainer:
                 img_ev_end = render_pkg_end["render"]
                 
                 #=================================Need To Change=========================================
-                strategy_BA.step_pre_backward(
-                    params=self.splats,
-                    optimizers=self.optimizers,
-                    state=strategy_state_BA,
-                    step=i,
-                    info=render_pkg_end["info"],
-                )
+                # strategy_BA.step_pre_backward(
+                #     params=self.splats,
+                #     optimizers=self.optimizers,
+                #     state=strategy_state_BA,
+                #     step=i,
+                #     info=render_pkg_end["info"],
+                # )
                 #================================================================================================
                 
                 if self.config["use_linLog"]:
@@ -2950,7 +2950,7 @@ class MeshSLAMTrainer:
                                 self.opt.lr_triangles_points_init,
                             )
 
-                            self.triangles.densification_postfix(new_triangles.vertices, new_triangles.vertix_weight, new_triangles._features_dc, new_triangles._features_rest, new_triangles._triangle_indices)
+                            self.triangles.densification_postfix(new_triangles.vertices, new_triangles.vertex_weight, new_triangles._features_dc, new_triangles._features_rest, new_triangles._triangle_indices)
                             
                             # new_gs = pcd_2_gs(
                             #     points= new_pcd.points.detach(),
