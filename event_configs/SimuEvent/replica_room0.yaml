@@ -2,8 +2,8 @@ inherit_from: event_configs/SimuEvent/simu_event.yaml
 dataset: 'replica_simu_event'
 
 # iteration number
-num_opti_steps_for_depthEst_init: 601 #4401
-num_opti_steps_for_init: 601 #3501
+num_opti_steps_for_depthEst_init: 4401
+num_opti_steps_for_init: 3501
 num_opti_steps_for_tracking: 201
 num_opti_steps_for_BA: 1501
 

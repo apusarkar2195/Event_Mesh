@@ -83,6 +83,9 @@ from utils.normal_utils import normal_to_rgb
 
 from fused_ssim import fused_ssim
 
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 
 
 SLAMProfiler_ = SLAMProfiler()
