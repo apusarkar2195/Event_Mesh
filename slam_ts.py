@@ -2908,7 +2908,7 @@ class MeshSLAMTrainer:
                 
                 # initialize...
                 # TODO : Check for the without depth initialization
-                # self.initialization(init_batch, niters=self.config['num_opti_steps_for_init'], traj_mode='linear', depth_map=depth_map)
+                self.initialization(init_batch, niters=self.config['num_opti_steps_for_init'], traj_mode='linear', depth_map=depth_map)
                 
                 bInitIsDone = True
             else:
