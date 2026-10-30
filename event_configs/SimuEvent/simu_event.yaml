@@ -7,6 +7,7 @@ num_opti_steps_for_tracking: 201
 num_opti_steps_for_BA: 1501
 num_opti_steps_for_global_BA: 2500
 num_opti_steps_for_final_global_BA: 4500
+
 refine_img_rendering_: False
 num_events_window_for_init: 300000
 num_events_window_for_tracking: 300000

@@ -1807,7 +1807,18 @@ class TriangleModel:
         probs = torch.where(areas < self.size_probs_zero, torch.zeros_like(probs), probs)
         probs = torch.where(self.image_size < self.size_probs_zero_image_space, torch.zeros_like(probs), probs) # dont splitt if smaller than 10
 
+        #============ debug ==========================
+        print("from triangle model add_new_gs")
+        print("probs:", probs.shape, probs.dtype,
+                "sum:", probs.sum().item(),
+                "min:", probs.min().item(),
+                "max:", probs.max().item(),
+                "nan:", torch.isnan(probs).any().item(),
+                "inf:", torch.isinf(probs).any().item())
+        #============ debug ==========================        
+
         rand_idx = self._sample_alives(probs=probs, num=num_gs)
+        print(f"Random indices : {rand_idx}")
 
         # Split the largest triangles
         split_large = splitt_large_triangles

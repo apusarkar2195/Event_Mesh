@@ -85,7 +85,7 @@ class OptimizationParams(ParamGroup):
         self.position_lr_max_steps = 30_000
         self.lambda_dssim = 0.2
 
-        self.densification_interval = 500
+        self.densification_interval = 100 #500 # TODO : Change the value
 
         self.densify_from_iter = 500
         self.densify_until_iter = 10000
@@ -93,7 +93,7 @@ class OptimizationParams(ParamGroup):
         self.random_background = False
         
         self.feature_lr = 0.0025
-        self.max_points = 4000000
+        self.max_points = 400000 #4000000
 
         # Opacity & weight
         self.set_weight = 0.28
@@ -116,14 +116,14 @@ class OptimizationParams(ParamGroup):
         self.intervall_add_triangles = 500
 
         # Prune triangles and vertices
-        self.prune_triangles_threshold = 0.235
+        self.prune_triangles_threshold = 0.235  # TODO : Do ablation with it
 
         # PARAMETER SECOND STAGE
         self.lr_triangles_points_init = 0.0018
 
-        self.start_opacity_floor = 5000
+        self.start_opacity_floor = 1000 #5000 # TODO : Changed the value
 
-        self.start_pruning = 4000
+        self.start_pruning = 600 #4000   # TODO Change the value
         self.sigma_until = 30000
         self.final_opacity_iter = 24000
 
