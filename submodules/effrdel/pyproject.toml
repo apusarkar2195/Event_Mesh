@@ -1,0 +1,26 @@
+[build-system]
+requires = [
+  "setuptools>=68",
+  "wheel",
+  "pybind11>=2.11",
+  "numpy>=1.23",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "effrdel"
+version = "0.1.0"
+description = "Efficient Restricted Delaunay"
+requires-python = ">=3.9"
+dependencies = [
+  "trimesh",
+  "scipy",
+  "gstaichi",
+  "libigl",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

@@ -1,0 +1,71 @@
+# --- build tools ---
+pip
+setuptools
+wheel
+pybind11
+ninja
+
+# --- core numerics / imaging ---
+numpy>=2.0,<3
+scipy
+numba
+Pillow
+imageio
+scikit-image
+opencv-contrib-python
+imgviz
+
+# --- geometry / 3D / SLAM ---
+trimesh
+plyfile
+open3d
+pypose
+torchgeometry
+pybullet
+evo
+rerun-sdk
+
+# --- deep learning utilities (need torch installed first) ---
+lpips
+torchmetrics
+fvcore
+iopath
+yacs
+
+# --- misc utilities ---
+matplotlib
+tqdm
+PyYAML
+rich
+wandb
+tabulate
+termcolor
+portalocker
+colorama
+packaging
+typing_extensions
+python-dateutil
+pyparsing
+cycler
+fonttools
+kiwisolver
+six
+h5py
+hdf5plugin
+pytorch-msssim
+jaxtyping
+pip install -U  "huggingface-hub<0.26.0"
+pip install tyro
+pip install diffusers==0.27.1
+pip install accelerate
+pip install -U "transformers<=4.48.1"
+pip install scikit-learn jaxtyping kornia
+
+# --- other denpendencies --
+# conda install -c nvidia/label/cuda-12.4.1 "cuda-toolkit=12.4.*" "cuda-nvcc=12.4.*" "cuda-version=12.4.*" -y
+# pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+# pip install --no-build-isolation ./submodules/simple-knn
+# pip install --no-build-isolation ./submodules/diff-triangle-mesh-rasterization
+# pip install --no-build-isolation -e ./submodules/effrdel
+# pip install --no-build-isolation git+https://github.com/princeton-vl/lietorch.git
+# pip install --no-build-isolation git+https://github.com/rahul-goel/fused-ssim/

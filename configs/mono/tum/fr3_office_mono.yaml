@@ -1,0 +1,25 @@
+inherit_from: "configs/mono/tum/base_config.yaml"
+
+
+
+# configs/mono/tum/fr3_office.yaml
+Dataset:
+  type: "tum"
+  dataset_path: null
+  sensor_type: "monocular"
+  Calibration:
+    fx: 535.4
+    fy: 539.2
+    cx: 320.1
+    cy: 247.6
+    width: 640
+    height: 480
+    distorted: false
+    k1: 0
+    k2: 0
+    p1: 0
+    p2: 0
+    k3: 0
+    depth_scale: 5000.0   # TUM depth is 16-bit in mm; divide by 5000 for meters
+Training:
+  log_interval: 1

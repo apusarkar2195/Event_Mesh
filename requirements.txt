@@ -1,0 +1,37 @@
+setuptools
+wheel
+pybind11
+ninja
+
+lpips
+plyfile
+opencv-python
+matplotlib
+tqdm
+trimesh
+
+numpy>=2.0,<3
+scipy
+open3d
+Pillow
+pyyaml
+rerun-sdk
+evo
+wandb
+rich
+torchmetrics
+imageio
+scikit-image
+imgviz
+pybullet
+
+# pyrealsense2
+
+# torch list - in order
+# conda install -c nvidia/label/cuda-12.4.1 "cuda-toolkit=12.4.*" "cuda-nvcc=12.4.*" "cuda-version=12.4.*" -y
+# pip install torch==2.6.0 torchvision==0.21.0 --index-url https://download.pytorch.org/whl/cu124
+# pip install --no-build-isolation ./submodules/simple-knn
+# pip install --no-build-isolation ./submodules/diff-triangle-mesh-rasterization
+# pip install --no-build-isolation -e ./submodules/effrdel
+# pip install --no-build-isolation git+https://github.com/princeton-vl/lietorch.git
+# pip install --no-build-isolation git+https://github.com/rahul-goel/fused-ssim/

@@ -1,0 +1,127 @@
+Results:
+  save_results: True
+  save_dir: "results"
+  save_trj: True
+  use_gui: True
+  use_rerun: True
+  eval_rendering: False
+  use_wandb: False
+  save_trj_kf_intv: 20
+
+Dataset:
+  type: 'tum'
+  sensor_type: 'monocular'
+  pcd_downsample: 64
+  pcd_downsample_init: 32
+  adaptive_pointsize: True
+  point_size: 0.01
+
+Training:
+  frame_stride: 1
+  log_interval: 1
+  init_itr_num: 1050
+  tracking_itr_num: 80
+  iterations_per_view: 40
+  size_threshold: 20
+  kf_interval: 5
+  edge_threshold: 1.1
+  rgb_boundary_threshold: 0.01
+  mapping_replay_size: 4
+  mapping_pose_lr_scale: .5
+  initial_ba:
+    enabled: False
+    mapping_iters: 100
+    pose_window: 7
+    pose_lr_scale: 1.0
+  use_mapping_replay: True
+  densify_grad_threshold: 0.00005
+  kf_translation: 0.08
+  kf_min_translation: 0.05
+  kf_overlap: 0.9
+  kf_cutoff: 0.3
+# Minimum screen-space triangle area (pixels²). Triangles below this are culled (removes slivers).
+# Increase to remove more thin/degenerate triangles; decrease to keep smaller details.
+  min_triangle_area_pixels: 2.0
+
+  use_fd_pose_grad: False
+  check_vertex_grad_fd: False
+
+  prune_mode: 'slam'
+  single_thread: False
+  spherical_harmonics: False
+  under_reconstructed_mask_threshold: 0.99
+
+  rdel: False
+
+  alpha_opacity: 0.9
+
+  lr:
+    cam_rot_delta: 0.003
+    cam_trans_delta: 0.001
+
+opt_params:
+  # Iterations & schedule
+  position_lr_delay_mult: 0.01
+  position_lr_max_steps: 30000
+  lambda_dssim: 0.2
+
+  random_background: false
+
+
+  # Learning rates & capacity
+  feature_lr: 0.0025
+  max_points: 4000000
+
+  # Opacity & weight
+  set_weight: 0.28
+  weight_lr: 0.05
+  lambda_weight: 0.0 # 1.9e-06
+
+  # Equilateral loss
+  lambda_equilateral: 0.002
+
+  # Normal loss
+  lambda_normals: 0.0006
+  lambda_normals_super: 0.01
+
+  add_percentage: 1.04
+  set_sigma: 0.6
+
+  # Prune triangles and vertices
+  prune_triangles_threshold: 0.35
+  prune_size: 1400
+
+  # Second stage
+  lr_triangles_points_init: 0.0011
+  start_opacity_floor: 5000
+  start_pruning: 4000
+  sigma_until: 30000
+  final_opacity_iter: 24000
+  sigma_start: 0
+
+  splitt_large_triangles: 100
+  start_upsampling: 20000
+  upscaling_factor: 1
+
+  size_probs_zero: 7.5e-05
+  size_probs_zero_image_space: 0.0
+
+  # Vertex / depth
+  lambda_vertex: 0.0 # 0.0001
+  max_diff_threshold: 0.5
+  start_vertex_opt: 12000
+  lamba_depth: 0.05
+  depth_lambda_init: 0.01
+  depth_lambda_final: 0.001
+
+model_params:
+  sh_degree: 0
+  source_path: ""
+  model_path: ""
+  resolution: -1
+  white_background: False
+  data_device: "cuda"
+
+pipeline_params:
+  convert_SHs_python: False
+  compute_cov3D_python: False

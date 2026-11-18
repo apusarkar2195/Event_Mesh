@@ -1,0 +1,77 @@
+[project]
+name = "meshslam"
+version = "0.1.0"
+description = "Mesh SLAM with differentiable triangle splatting (MeshSplatting backend)"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    # Build-time for path deps (e.g. diff-triangle-rasterization uses setuptools)
+    "setuptools",
+    # MeshSplatting / PyTorch
+    "torch==2.7.1",
+    "torchvision==0.22.1",
+    # Your requirements
+    "lpips",
+    "plyfile",
+    "opencv-python",
+    "matplotlib",
+    "tqdm",
+    "trimesh",
+    # Common mesh-splatting / 3DGS stack
+    "numpy>=2.0,<3",
+    "scipy",
+    "open3d",
+    "Pillow",
+    "pyyaml",
+    "rerun-sdk",
+    "simple-knn",
+    "effrdel",
+    "diff-triangle-rasterization",
+    "pybind11",
+    "lietorch",
+    "evo",
+    "wandb",
+    "rich",
+    "torchmetrics",
+    "imageio",
+    "scikit-image",
+    "imgviz",
+    "fused-ssim",
+    "pybullet",
+]
+
+# Live-capture support. Kept in a default dependency group (see
+# [tool.uv] default-groups) so `uv sync` installs it and never prunes it;
+# opt out with `uv sync --no-default-groups`.
+[dependency-groups]
+live = ["pyrealsense2"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["meshslam"]
+
+[tool.uv.sources]
+simple-knn = { path = "submodules/simple-knn" }
+effrdel = { path = "submodules/effrdel", editable = true }
+diff-triangle-rasterization = { path = "submodules/diff-triangle-mesh-rasterization" }
+lietorch = { git = "https://github.com/princeton-vl/lietorch.git" }
+fused-ssim = { git = "https://github.com/rahul-goel/fused-ssim/" }
+
+# Pin the build-time torch to the SAME version as the runtime dependency
+# (torch==2.7.1). Without the pin, uv resolves the latest torch for the
+# isolated build env, producing CUDA extensions linked against a newer libtorch
+# ABI than the one installed at runtime ("undefined symbol: ...incref_pyobject").
+[tool.uv.extra-build-dependencies]
+diff-triangle-rasterization = ["torch==2.7.1", "setuptools"]
+simple-knn = ["torch==2.7.1"]
+effrdel = ["pybind11"]
+lietorch = ["torch==2.7.1"]
+fused-ssim = ["torch==2.7.1"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+# Build path/git deps in isolation so extra-build-dependencies (torch, setuptools, pybind11) are used
+no-build-isolation-package = []
+default-groups = ["live"]

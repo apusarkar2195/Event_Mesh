@@ -1,0 +1,334 @@
+#
+# The original code is under the following copyright:
+# Copyright (C) 2023, Inria
+# GRAPHDECO research group, https://team.inria.fr/graphdeco
+# All rights reserved.
+#
+# This software is free for non-commercial, research and evaluation use 
+# under the terms of the LICENSE_GS.md file.
+#
+# For inquiries contact george.drettakis@inria.fr
+#
+# The modifications of the code are under the following copyright:
+# Copyright (C) 2025, University of Liege
+# TELIM research group, http://www.telecom.ulg.ac.be/
+# All rights reserved.
+# The modifications are under the LICENSE.md file.
+#
+# For inquiries contact jan.held@uliege.be
+#
+
+import torch
+from torch import nn
+import numpy as np
+from mesh_splatting.utils.graphics_utils import getWorld2View2, getProjectionMatrix2
+from utils.slam_utils import image_gradient, image_gradient_mask
+from torch.nn import functional as F
+
+from utils.normal_utils import get_cam_coords, d2n_tblr, intrins_to_intrins_inv
+from utils.normal_utils import Depth2normal
+
+
+class Camera(nn.Module):
+    def __init__(
+        self,
+        uid,
+        color,
+        depth,
+        gt_T,
+        projection_matrix,
+        fx,
+        fy,
+        cx,
+        cy,
+        fovx,
+        fovy,
+        image_height,
+        image_width,
+        device="cuda:0",
+    ):
+        super(Camera, self).__init__()
+        self.uid = uid
+        self.device = device
+
+        T = torch.eye(4, device=device)
+        self.R = T[:3, :3]
+        self.T = T[:3, 3]
+        self.R_gt = gt_T[:3, :3]
+        self.T_gt = gt_T[:3, 3]
+
+        # INSERT_YOUR_CODE
+        # def random_se3_pose(device="cuda:0"):
+        #     """
+        #     Generates a random SE(3) pose (rotation matrix and translation vector).
+        #     Returns:
+        #         R: (3, 3) torch.Tensor rotation matrix
+        #         T: (3,) torch.Tensor translation vector
+        #     """
+        #     # Random rotation using axis-angle
+        #     axis = torch.randn(3, device=device)
+        #     axis = axis / torch.norm(axis)  # unit vector
+        #     angle = torch.empty(1, device=device).uniform_(0, 2 * np.pi).item()
+
+        #     K = torch.tensor(
+        #         [
+        #             [0, -axis[2], axis[1]],
+        #             [axis[2], 0, -axis[0]],
+        #             [-axis[1], axis[0], 0],
+        #         ],
+        #         device=device,
+        #         dtype=torch.float32,
+        #     )
+        #     R = (
+        #         torch.eye(3, device=device)
+        #         + torch.sin(angle) * K
+        #         + (1 - torch.cos(angle)) * (K @ K)
+        #     )
+
+        #     # Random translation (uniform in range [-1, 1])
+        #     T = torch.empty(3, device=device).uniform_(-1.0, 1.0)
+        #     return R, T
+        # INSERT_YOUR_CODE
+        import numpy as np
+        from scipy.spatial.transform import Rotation
+
+        def random_se3_pose(device="cuda:0"):
+            """
+            Generates a random SE(3) pose (rotation matrix and translation vector) using scipy.
+            Returns:
+                R: (3, 3) torch.Tensor rotation matrix
+                T: (3,) torch.Tensor translation vector
+            """
+            # Random rotation using scipy
+            rot = Rotation.random()
+            R_np = rot.as_matrix()  # (3, 3) numpy array
+
+            # Random translation in range [-1, 1]
+            T_np = np.random.uniform(-1.0, 1.0, size=(3,))
+
+            # Convert to torch.Tensor
+            R = torch.from_numpy(R_np).float().to(device)
+            T = torch.from_numpy(T_np).float().to(device)
+            return R, T
+    
+        
+
+        # self.R, self.T = random_se3_pose(device)
+
+        self.gt_T = gt_T.to(torch.float32).clone()
+        # self.R = self.gt_T[:3, :3].clone() 
+        # self.T = self.gt_T[:3, 3].clone()
+
+        self.original_image = color
+        self.depth = depth
+        self.grad_mask = None
+        self.rgb_pixel_mask = None  # set by tracking/mapping or default to ones
+        self.rgb_pixel_mask_mapping = None
+
+        self.fx = fx
+        self.fy = fy
+        self.cx = cx
+        self.cy = cy
+        self.FoVx = fovx
+        self.FoVy = fovy
+        self.image_height = image_height
+        self.image_width = image_width
+
+        self.cam_rot_delta = nn.Parameter(
+            torch.zeros(3, requires_grad=True, device=device)
+        )
+        self.cam_trans_delta = nn.Parameter(
+            torch.zeros(3, requires_grad=True, device=device)
+        )
+
+        self.exposure_a = nn.Parameter(
+            torch.tensor([0.0], requires_grad=True, device=device)
+        )
+        self.exposure_b = nn.Parameter(
+            torch.tensor([0.0], requires_grad=True, device=device)
+        )
+
+        self.projection_matrix = projection_matrix.to(device=device)
+
+        intrins = torch.tensor([[fx, 0, cx], [0, fy, cy], [0, 0, 1.0]])
+        self.intrins_inv = intrins_to_intrins_inv(intrins).float().unsqueeze(0).to(device)
+
+        self.normal = None
+        self.normal_raw = None
+        self.mask = None
+
+        self.depth2normal = Depth2normal(d_min=0.0, d_max=10.0, k=5)
+
+
+    @staticmethod
+    def init_from_dataset(dataset, idx, projection_matrix):
+        gt_color, gt_depth, gt_pose = dataset[idx]
+        return Camera(
+            idx,
+            gt_color,
+            gt_depth,
+            gt_pose,
+            projection_matrix,
+            dataset.fx,
+            dataset.fy,
+            dataset.cx,
+            dataset.cy,
+            dataset.fovx,
+            dataset.fovy,
+            dataset.height,
+            dataset.width,
+            device=dataset.device,
+        )
+
+    @staticmethod
+    def init_from_gui(uid, T, FoVx, FoVy, fx, fy, cx, cy, H, W):
+        projection_matrix = getProjectionMatrix2(
+            znear=0.01, zfar=100.0, fx=fx, fy=fy, cx=cx, cy=cy, W=W, H=H
+        ).transpose(0, 1)
+        return Camera(
+            uid, None, None, T, projection_matrix, fx, fy, cx, cy, FoVx, FoVy, H, W
+        )
+
+
+    @property
+    def world_view_transform(self):
+        # Use the mutable R and T, not the static gt_T
+        return getWorld2View2(self.R, self.T).transpose(0, 1)
+    
+    @property
+    def world_view_transform_gt(self):
+        return self.gt_T.transpose(0, 1).to(device=self.device)
+
+    @property
+    def full_proj_transform(self):
+        return (
+            self.world_view_transform.unsqueeze(0).bmm(
+                self.projection_matrix.unsqueeze(0)
+            )
+        ).squeeze(0)
+
+    @property
+    def camera_center(self):
+        return self.world_view_transform.inverse()[3, :3]
+
+    @property
+    def camera_center_gt(self):
+        """Camera center in world coordinates from ground-truth pose."""
+        return self.world_view_transform_gt.inverse()[3, :3]
+    
+
+    def inverse_t(self, Rt):
+        Rt_inv = torch.eye(4, device=Rt.device, dtype=Rt.dtype)
+        Rt_inv[:3, :3] = Rt[:3, :3].t()
+        Rt_inv[:3, 3] = -Rt[:3, :3].t() @ Rt[:3, 3]
+        return Rt_inv
+
+    def update_RT(self, R, t):
+        self.R = R.to(device=self.device)
+        self.T = t.to(device=self.device)
+    
+    def clean(self):
+        self.original_image = None
+        self.depth = None
+        self.grad_mask = None
+
+        self.cam_rot_delta = None
+        self.cam_trans_delta = None
+
+        self.exposure_a = None
+        self.exposure_b = None
+        
+        self.rgb_pixel_mask = None
+        self.rgb_pixel_mask_mapping = None
+        self.gt_depth = None
+
+
+    def offload_to_cpu(self):
+        """Move heavy read-only camera data to CPU to save GPU memory."""
+        attrs_to_move = [
+            "original_image", "depth", "normal", 
+            "grad_mask", "rgb_pixel_mask", "rgb_pixel_mask_mapping", 
+            "gt_depth", "mask"
+        ]
+        for attr in attrs_to_move:
+            val = getattr(self, attr, None)
+            if val is not None and hasattr(val, "cpu"):
+                # Move to CPU to free VRAM
+                setattr(self, attr, val.cpu())
+                
+        # Clear out raw numpy arrays if they exist
+        if hasattr(self, "normal_raw"):
+            self.normal_raw = None
+
+    
+
+    def compute_grad_mask(self, config):
+        edge_threshold = config["Training"]["edge_threshold"]
+
+        gray_img = self.original_image.mean(dim=0, keepdim=True)
+        gray_grad_v, gray_grad_h = image_gradient(gray_img)
+        mask_v, mask_h = image_gradient_mask(gray_img)
+        gray_grad_v = gray_grad_v * mask_v
+        gray_grad_h = gray_grad_h * mask_h
+        img_grad_intensity = torch.sqrt(gray_grad_v**2 + gray_grad_h**2)
+        
+        if config["Dataset"]["type"] == "replica":
+            size = 32
+            multiplier = edge_threshold
+            _, h, w = self.original_image.shape
+            I = img_grad_intensity.unsqueeze(0)
+            I_unf = F.unfold(I, size, stride=size)
+            median_patch, _ = torch.median(I_unf, dim=1,keepdim=True)
+            mask = (I_unf > (median_patch * multiplier)).float()
+            I_f = F.fold(mask, I.shape[-2:],size,stride=size).squeeze(0)
+            self.grad_mask = I_f
+        else:
+            median_img_grad_intensity = img_grad_intensity.median()
+            self.grad_mask = (
+                img_grad_intensity > median_img_grad_intensity * edge_threshold
+            )
+
+        gt_image = self.original_image.cuda()
+        _, h, w = self.original_image.cuda().shape
+        mask_shape = (1, h, w)
+        rgb_boundary_threshold = config["Training"]["rgb_boundary_threshold"]
+        rgb_pixel_mask = (gt_image.sum(dim=0) > rgb_boundary_threshold).view(*mask_shape)
+        self.rgb_pixel_mask = rgb_pixel_mask * self.grad_mask
+        self.rgb_pixel_mask_mapping = rgb_pixel_mask
+        
+        if self.depth is not None:
+            self.gt_depth = torch.from_numpy(self.depth).to(
+            dtype=torch.float32, device=self.device
+        )[None]
+
+            depth = self.gt_depth.unsqueeze(0)
+            points = get_cam_coords(self.intrins_inv, depth)
+            normal, valid_mask = d2n_tblr(points, k=5, d_min=1e-3, d_max=1000.0)
+            # import ipdb; ipdb.set_trace()   
+            # normal, valid_mask = self.depth2normal(points)
+            normal = normal * valid_mask
+            self.normal = normal.squeeze(0)       # (3, H, W)
+            self.normal_raw = self.normal.permute(1, 2, 0).cpu().numpy()
+            self.mask = valid_mask.squeeze(0)     # (1, H, W)
+
+        # Note: by default self.mask (from depth-derived normals) is NOT applied to
+        # rgb_pixel_mask. Sky pixels with no depth should still have RGB loss so stray
+        # triangles get pushed to match the actual sky appearance (and eventually get
+        # pruned). The depth mask is applied only in the depth loss terms (slam_utils.py).
+        # Set Training.mask_rgb_with_normal_mask to restore masking of the RGB tracking
+        # loss by the depth-normal validity mask (excludes depth-discontinuity and
+        # border pixels; appropriate for dense-depth indoor data such as Replica).
+        if (
+            config["Training"].get("mask_rgb_with_normal_mask", False)
+            and getattr(self, "mask", None) is not None
+        ):
+            self.rgb_pixel_mask = self.rgb_pixel_mask * self.mask
+
+
+
+
+class CameraMsg():
+    def __init__(self, Camera):
+        self.uid = Camera.uid
+        self.T = Camera.T
+        self.T_gt = Camera.T_gt
